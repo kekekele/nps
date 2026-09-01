@@ -42,7 +42,7 @@ def parse_score(value: Any) -> tuple[int | None, str | None]:
     if not number.is_integer():
         return None, "not_integer"
     score = int(number)
-    if not 0 <= score <= 10:
+    if not 1 <= score <= 10:
         return None, "out_of_range"
     return score, None
 

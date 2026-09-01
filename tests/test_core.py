@@ -12,6 +12,8 @@ from nps_analysis.pipeline import (
     PipelineContext,
     _feature_result,
     build_analysis_sample,
+    build_static_feature_profile,
+    static_profile_feature_names,
 )
 
 
@@ -23,6 +25,8 @@ def test_confirmed_segment_rule_uses_any_low_score():
 
 def test_score_validation_distinguishes_invalid_values():
     assert parse_score("10") == (10, None)
+    assert parse_score(1) == (1, None)
+    assert parse_score(0) == (None, "out_of_range")
     assert parse_score("6.5") == (None, "not_integer")
     assert parse_score(11) == (None, "out_of_range")
     assert parse_score("bad") == (None, "not_numeric")
@@ -123,3 +127,37 @@ def test_numeric_feature_lift_uses_quantile_groups():
     assert result is not None
     assert result["feature_type"] == "numeric"
     assert result["max_low_rate_lift"] <= 10.0
+
+
+def test_static_profile_contains_all_three_cohorts():
+    sample = pd.DataFrame(
+        {
+            "segment_label": ["low", "non_low", "non_low"],
+            "age": [20, 30, 40],
+            "city": ["A", "A", "B"],
+        }
+    )
+
+    profile = build_static_feature_profile(sample, ["age", "city"])
+
+    assert set(profile["cohort"]) == {"all", "low", "non_low"}
+    assert profile.loc[
+        (profile["cohort"] == "all") & (profile["feature_name"] == "city"),
+        "value_count",
+    ].sum() == 3
+
+
+def test_static_profile_candidates_include_constant_features():
+    sample = pd.DataFrame(
+        {
+            "survey_id": ["s1", "s2"],
+            "customer_key": ["c1", "c2"],
+            "segment_label": ["low", "non_low"],
+            "constant_static_feature": ["same", "same"],
+            "arpu_mean_6m": [1.0, 2.0],
+        }
+    )
+
+    names = static_profile_feature_names(sample, {"arpu_mean_6m"})
+
+    assert names == ["constant_static_feature"]

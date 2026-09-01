@@ -333,7 +333,7 @@ def build_survey_outputs(ctx: PipelineContext) -> dict[str, pd.DataFrame]:
                 "question_code": code,
                 "question_text": score_columns[code],
                 "include_in_segment": 1,
-                "min_score": 0,
+                "min_score": 1,
                 "max_score": 10,
             }
             for code in SCORE_CODES
@@ -360,6 +360,7 @@ def build_survey_outputs(ctx: PipelineContext) -> dict[str, pd.DataFrame]:
                 hit_records.append(
                     {
                         "survey_id": survey_id,
+                        "customer_key": normalize_identifier(row[phone_column]),
                         "question_code": option["parent_question_code"],
                         "subquestion_code": option["subquestion_code"],
                         "option_code": option["option_code"],
@@ -376,6 +377,7 @@ def build_survey_outputs(ctx: PipelineContext) -> dict[str, pd.DataFrame]:
         hit_records,
         columns=[
             "survey_id",
+            "customer_key",
             "question_code",
             "subquestion_code",
             "option_code",
@@ -970,6 +972,93 @@ def analyze_features(
     )
 
 
+def static_profile_feature_names(
+    sample: pd.DataFrame, trajectory_columns: set[str]
+) -> list[str]:
+    excluded = {
+        "survey_id",
+        "customer_key",
+        "segment_label",
+        "source_row_no",
+        "source_batch_id",
+        "survey_month",
+        "as_of_date",
+        "feature_window",
+        "valid_score_count",
+        "low_score_count",
+    }
+    return [
+        column
+        for column in sample.columns
+        if column not in excluded
+        and column not in trajectory_columns
+        and not column.endswith("_key")
+        and not column.startswith("phone_")
+        and not column.startswith("source_")
+        and not pd.api.types.is_datetime64_any_dtype(sample[column])
+    ]
+
+
+def build_static_feature_profile(
+    sample: pd.DataFrame, static_feature_names: list[str]
+) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    cohorts = {
+        "all": sample,
+        "low": sample[sample["segment_label"].eq("low")],
+        "non_low": sample[sample["segment_label"].eq("non_low")],
+    }
+    for feature_name in static_feature_names:
+        full_feature = sample[feature_name]
+        numeric = pd.to_numeric(full_feature, errors="coerce")
+        non_missing = max(int(full_feature.notna().sum()), 1)
+        is_numeric = numeric.notna().sum() / non_missing >= 0.8 and numeric.nunique() >= 5
+        for cohort_name, cohort in cohorts.items():
+            feature = cohort[feature_name]
+            base = {
+                "cohort": cohort_name,
+                "feature_name": feature_name,
+                "feature_type": "numeric" if is_numeric else "categorical",
+                "cohort_survey_count": int(len(cohort)),
+                "valid_count": int(feature.notna().sum()),
+                "missing_count": int(feature.isna().sum()),
+                "missing_rate": float(feature.isna().mean()) if len(cohort) else np.nan,
+            }
+            if is_numeric:
+                values = pd.to_numeric(feature, errors="coerce").dropna()
+                rows.append({
+                    **base,
+                    "feature_value": None,
+                    "value_count": None,
+                    "value_share": None,
+                    "mean": values.mean(),
+                    "median": values.median(),
+                    "std": values.std(),
+                    "min": values.min(),
+                    "q25": values.quantile(0.25),
+                    "q75": values.quantile(0.75),
+                    "max": values.max(),
+                })
+            else:
+                values = feature.fillna("<MISSING>").astype(str)
+                counts = values.value_counts(dropna=False)
+                for feature_value, count in counts.items():
+                    rows.append({
+                        **base,
+                        "feature_value": feature_value,
+                        "value_count": int(count),
+                        "value_share": float(count / len(cohort)) if len(cohort) else np.nan,
+                        "mean": None,
+                        "median": None,
+                        "std": None,
+                        "min": None,
+                        "q25": None,
+                        "q75": None,
+                        "max": None,
+                    })
+    return pd.DataFrame(rows)
+
+
 def build_feature_groups(
     sample: pd.DataFrame, feature_names: list[str]
 ) -> pd.DataFrame:
@@ -1093,6 +1182,12 @@ def build_analysis_outputs(
         or column == "days_since_last_event"
     }
     static_features, trajectory_features = analyze_features(sample, trajectory_columns)
+    static_profile = build_static_feature_profile(
+        sample, static_profile_feature_names(sample, trajectory_columns)
+    )
+    ctx.write_csv(
+        static_profile, ctx.analysis_dir / "cohort_feature_profile_static.csv"
+    )
     ctx.write_csv(static_features, ctx.analysis_dir / "important_feature_static.csv")
     ctx.write_csv(
         trajectory_features, ctx.analysis_dir / "important_feature_trajectory.csv"
