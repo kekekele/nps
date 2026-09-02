@@ -4,6 +4,7 @@ from nps_analysis.core import (
     benjamini_hochberg,
     is_subquestion_hit,
     month_start,
+    parse_business_datetime,
     parse_score,
     parse_subquestion_header,
     segment_scores,
@@ -50,6 +51,15 @@ def test_month_and_fdr_helpers():
     assert month_start(202608) == pd.Timestamp("2026-08-01")
     adjusted = benjamini_hochberg(pd.Series([0.01, 0.04, 0.03]))
     assert adjusted.round(2).tolist() == [0.03, 0.04, 0.04]
+
+
+def test_business_datetime_parser_handles_source_formats():
+    assert parse_business_datetime(20260706) == pd.Timestamp("2026-07-06")
+    assert parse_business_datetime("20260806194448") == pd.Timestamp(
+        "2026-08-06 19:44:48"
+    )
+    assert parse_business_datetime(45567) == pd.Timestamp("2024-10-02")
+    assert pd.isna(parse_business_datetime(123456789))
 
 
 def test_analysis_sample_resolves_geography_and_month_duplicates(tmp_path):
@@ -141,10 +151,13 @@ def test_static_profile_contains_all_three_cohorts():
     profile = build_static_feature_profile(sample, ["age", "city"])
 
     assert set(profile["cohort"]) == {"all", "low", "non_low"}
-    assert profile.loc[
-        (profile["cohort"] == "all") & (profile["feature_name"] == "city"),
-        "value_count",
-    ].sum() == 3
+    assert (
+        profile.loc[
+            (profile["cohort"] == "all") & (profile["feature_name"] == "city"),
+            "value_count",
+        ].sum()
+        == 3
+    )
 
 
 def test_static_profile_candidates_include_constant_features():

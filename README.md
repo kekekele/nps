@@ -38,3 +38,17 @@ python -m venv .venv
 ```
 
 当前实现只进行数据清洗和统计分析，不包含预测模型训练。
+
+## 潜在低分规则识别
+
+规则引擎独立运行，不会触发现有全量清洗分析流程。`--as-of` 是证据截止日，规则只读取该日期之前的行为：
+
+```powershell
+.\.venv\Scripts\python.exe -m nps_analysis.potential_low_cli `
+  --input "doc\指标汇总.xlsx" `
+  --output "data\potential-low\20260901" `
+  --as-of "2026-09-01" `
+  --rule-version "potential-low-v1"
+```
+
+输出包括用户结果、用户类型、证据、类型画像、问卷级匹配明细、匹配指标汇总、规则字典、批次质量和清单。其中 `rule_validation_detail.csv`逐条标记 TP/FP/FN/TN，`rule_validation.csv`输出总体、分月和分风险类型的 precision、recall、F1、Jaccard、specificity、accuracy 与 lift。文本规则只读取投诉与触点的实际文本字段；业务订购、资费变更、限速加包等只生成结构化证据。

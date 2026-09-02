@@ -23,6 +23,7 @@ from .core import (
     month_start,
     mutual_information,
     normalize_identifier,
+    parse_business_datetime,
     parse_score,
     parse_subquestion_header,
     segment_scores,
@@ -221,12 +222,7 @@ def _yes_no(value: Any) -> int | None:
 
 
 def _date_value(value: Any) -> pd.Timestamp:
-    text = normalize_identifier(value)
-    if text is None:
-        return pd.NaT
-    if re.fullmatch(r"\d{8}", text):
-        return pd.to_datetime(text, format="%Y%m%d", errors="coerce")
-    return pd.to_datetime(value, errors="coerce")
+    return parse_business_datetime(value)
 
 
 def _score_column(headers: list[str], code: str) -> str:
@@ -1012,7 +1008,9 @@ def build_static_feature_profile(
         full_feature = sample[feature_name]
         numeric = pd.to_numeric(full_feature, errors="coerce")
         non_missing = max(int(full_feature.notna().sum()), 1)
-        is_numeric = numeric.notna().sum() / non_missing >= 0.8 and numeric.nunique() >= 5
+        is_numeric = (
+            numeric.notna().sum() / non_missing >= 0.8 and numeric.nunique() >= 5
+        )
         for cohort_name, cohort in cohorts.items():
             feature = cohort[feature_name]
             base = {
@@ -1026,36 +1024,42 @@ def build_static_feature_profile(
             }
             if is_numeric:
                 values = pd.to_numeric(feature, errors="coerce").dropna()
-                rows.append({
-                    **base,
-                    "feature_value": None,
-                    "value_count": None,
-                    "value_share": None,
-                    "mean": values.mean(),
-                    "median": values.median(),
-                    "std": values.std(),
-                    "min": values.min(),
-                    "q25": values.quantile(0.25),
-                    "q75": values.quantile(0.75),
-                    "max": values.max(),
-                })
+                rows.append(
+                    {
+                        **base,
+                        "feature_value": None,
+                        "value_count": None,
+                        "value_share": None,
+                        "mean": values.mean(),
+                        "median": values.median(),
+                        "std": values.std(),
+                        "min": values.min(),
+                        "q25": values.quantile(0.25),
+                        "q75": values.quantile(0.75),
+                        "max": values.max(),
+                    }
+                )
             else:
                 values = feature.fillna("<MISSING>").astype(str)
                 counts = values.value_counts(dropna=False)
                 for feature_value, count in counts.items():
-                    rows.append({
-                        **base,
-                        "feature_value": feature_value,
-                        "value_count": int(count),
-                        "value_share": float(count / len(cohort)) if len(cohort) else np.nan,
-                        "mean": None,
-                        "median": None,
-                        "std": None,
-                        "min": None,
-                        "q25": None,
-                        "q75": None,
-                        "max": None,
-                    })
+                    rows.append(
+                        {
+                            **base,
+                            "feature_value": feature_value,
+                            "value_count": int(count),
+                            "value_share": (
+                                float(count / len(cohort)) if len(cohort) else np.nan
+                            ),
+                            "mean": None,
+                            "median": None,
+                            "std": None,
+                            "min": None,
+                            "q25": None,
+                            "q75": None,
+                            "max": None,
+                        }
+                    )
     return pd.DataFrame(rows)
 
 

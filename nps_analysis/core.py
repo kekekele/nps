@@ -4,6 +4,7 @@ import math
 import re
 import unicodedata
 from collections.abc import Iterable
+from datetime import date, datetime
 from typing import Any
 
 import numpy as np
@@ -93,6 +94,33 @@ def month_start(value: Any) -> pd.Timestamp:
         return parsed.to_period("M").to_timestamp() if not pd.isna(parsed) else pd.NaT
     parsed = pd.to_datetime(value, errors="coerce")
     return parsed.to_period("M").to_timestamp() if not pd.isna(parsed) else pd.NaT
+
+
+def parse_business_datetime(value: Any) -> pd.Timestamp:
+    if value is None or pd.isna(value):
+        return pd.NaT
+    if isinstance(value, (datetime, date, pd.Timestamp)):
+        return pd.Timestamp(value)
+
+    text = clean_text(value)
+    if text is None:
+        return pd.NaT
+    text = re.sub(r"\.0$", "", text)
+    formats = {
+        6: "%Y%m",
+        8: "%Y%m%d",
+        12: "%Y%m%d%H%M",
+        14: "%Y%m%d%H%M%S",
+    }
+    if text.isdigit() and len(text) in formats:
+        return pd.to_datetime(text, format=formats[len(text)], errors="coerce")
+
+    if re.fullmatch(r"\d+(\.\d+)?", text):
+        serial = float(text)
+        if 1 <= serial <= 100000:
+            return pd.Timestamp("1899-12-30") + pd.to_timedelta(serial, unit="D")
+        return pd.NaT
+    return pd.to_datetime(text, errors="coerce")
 
 
 def benjamini_hochberg(p_values: pd.Series) -> pd.Series:
