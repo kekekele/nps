@@ -48,7 +48,26 @@ python -m venv .venv
   --input "doc\指标汇总.xlsx" `
   --output "data\potential-low\20260901" `
   --as-of "2026-09-01" `
-  --rule-version "potential-low-v1"
+  --rule-version "potential-low-v3" `
+  --potential-low-min-types 3 `
+  --medium-priority-min-types 2
 ```
 
 输出包括用户结果、用户类型、证据、类型画像、问卷级匹配明细、匹配指标汇总、规则字典、批次质量和清单。其中 `rule_validation_detail.csv`逐条标记 TP/FP/FN/TN，`rule_validation.csv`输出总体、分月和分风险类型的 precision、recall、F1、Jaccard、specificity、accuracy 与 lift。文本规则只读取投诉与触点的实际文本字段；业务订购、资费变更、限速加包等只生成结构化证据。
+
+### 可选中文语义匹配
+
+默认只运行可审计的结构化与正则规则。需要补充同义改写的文本召回时，可启用本地句向量匹配；首次运行会下载指定模型，之后模型从本地缓存加载，投诉文本不会发送到外部服务：
+
+```powershell
+.\.venv\Scripts\python.exe -m nps_analysis.potential_low_cli `
+  --input "doc\指标汇总.xlsx" `
+  --output "data\potential-low\20260902_semantic" `
+  --as-of "2026-09-02" `
+  --rule-version "potential-low-semantic-v1" `
+  --semantic-enabled `
+  --semantic-model "BAAI/bge-small-zh-v1.5" `
+  --semantic-threshold 0.82
+```
+
+语义命中会输出为 `SEMANTIC_*` 中等证据，并记录最高余弦相似度和命中的原型句。它只补充投诉未解决、资费不满、办理受阻、营销争议、提醒不足五类文本证据；不会单独触发流量超套或家宽体验类型，且仍受已解决文本、超套和狼号等既有排除条件约束。应使用独立输出目录，并与纯规则版本在历史问卷上对比后冻结阈值。

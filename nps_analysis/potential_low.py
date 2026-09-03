@@ -133,16 +133,92 @@ PATTERNS = {
     "marketing_dispute": re.compile(
         r"夸大宣传|与实际不符|隐瞒.{0,8}(条件|限制)|诱导|未经同意|不知情.{0,8}(办理|开通)"
     ),
-    "reminder_missing": re.compile(r"未提醒|没有提醒|提醒不及时|未告知.{0,8}(收费|费用)"),
+    "reminder_missing": re.compile(
+        r"未提醒|没有提醒|提醒不及时|未告知.{0,8}(收费|费用)"
+    ),
     "negative": re.compile(r"不满|生气|愤怒|差评|负向|负面|投诉|离网|销户"),
 }
 
 NEGATED = re.compile(r"已解决|处理完成|已经处理|没有投诉|无投诉|未出现故障|没有故障")
 
+SEMANTIC_PROTOTYPES = {
+    "投诉未解决疑似型": (
+        "客户的问题一直没有处理好，再次反映仍未解决",
+        "投诉后迟迟没有得到解决",
+    ),
+    "套餐资费不满疑似型": (
+        "套餐价格太贵，收费不合理",
+        "优惠到期后资费上涨，性价比很低",
+    ),
+    "办理变更退订受阻疑似型": (
+        "想办理或退订业务，但一直无法办理",
+        "业务取消受限，流程复杂且有强制绑定",
+    ),
+    "营销宣传争议型": (
+        "宣传内容和实际服务不一致，存在诱导办理",
+        "未经同意被开通业务，事先不知情",
+    ),
+    "提醒告知不足疑似型": (
+        "产生额外费用前没有收到提醒或告知",
+        "流量超额收费但没有及时提醒",
+    ),
+}
+
+
+class SemanticMatcher:
+    """Locally embeds texts and fixed risk prototypes on first use."""
+
+    def __init__(
+        self,
+        model_name: str,
+        threshold: float,
+        encoder: Any | None = None,
+    ) -> None:
+        self.threshold = threshold
+        self._encoder = encoder
+        self._model_name = model_name
+        self._prototype_types = tuple(SEMANTIC_PROTOTYPES)
+        self._prototype_texts = tuple(
+            text for texts in SEMANTIC_PROTOTYPES.values() for text in texts
+        )
+        self._prototype_embeddings: np.ndarray | None = None
+
+    def _encode(self, texts: list[str] | tuple[str, ...]) -> np.ndarray:
+        if self._encoder is None:
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError as error:
+                raise RuntimeError(
+                    "Semantic matching requires sentence-transformers; run pip install -r requirements.txt"
+                ) from error
+            _progress(
+                f"[semantic] Loading local model {self._model_name} on CPU; first run may download weights"
+            )
+            self._encoder = SentenceTransformer(self._model_name, device="cpu")
+            _progress("[semantic] Model ready")
+        embeddings = self._encoder.encode(texts, normalize_embeddings=True)
+        return np.asarray(embeddings, dtype=float)
+
+    def match(self, text: str) -> tuple[str, str, float] | None:
+        if self._prototype_embeddings is None:
+            self._prototype_embeddings = self._encode(self._prototype_texts)
+        text_embedding = self._encode([text])[0]
+        scores = self._prototype_embeddings @ text_embedding
+        best_index = int(np.argmax(scores))
+        score = float(scores[best_index])
+        if score < self.threshold:
+            return None
+        prototype_type_index = 0
+        for type_index, prototypes in enumerate(SEMANTIC_PROTOTYPES.values()):
+            if best_index < prototype_type_index + len(prototypes):
+                return self._prototype_types[type_index], self._prototype_texts[best_index], score
+            prototype_type_index += len(prototypes)
+        return None
+
 
 @dataclass(frozen=True)
 class RuleConfig:
-    version: str = "potential-low-v1"
+    version: str = "potential-low-v3"
     lookback_days: int = 183
     repeat_days: int = 90
     repeat_complaint_count: int = 2
@@ -150,6 +226,21 @@ class RuleConfig:
     repeat_subscription_count: int = 2
     negative_contact_count: int = 3
     type_threshold: int = 3
+    potential_low_min_types: int = 3
+    medium_priority_min_types: int = 2
+    semantic_enabled: bool = False
+    semantic_model: str = "BAAI/bge-small-zh-v1.5"
+    semantic_threshold: float = 0.82
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.medium_priority_min_types <= self.potential_low_min_types:
+            raise ValueError(
+                "medium_priority_min_types must be between 1 and potential_low_min_types"
+            )
+        if self.potential_low_min_types > len(RISK_TYPES):
+            raise ValueError("potential_low_min_types exceeds available risk types")
+        if not 0 <= self.semantic_threshold <= 1:
+            raise ValueError("semantic_threshold must be between 0 and 1")
 
 
 def _event_time(value: Any) -> pd.Timestamp:
@@ -171,6 +262,10 @@ def _is_negated(text: str, match: re.Match[str]) -> bool:
     start = max(0, match.start() - 12)
     end = min(len(text), match.end() + 12)
     return bool(NEGATED.search(text[start:end]))
+
+
+def _progress(message: str) -> None:
+    print(message, flush=True)
 
 
 def _evidence(
@@ -208,42 +303,100 @@ def _prepare(frame: pd.DataFrame, names: list[str]) -> pd.DataFrame:
 def extract_monthly_evidence(frame: pd.DataFrame) -> list[dict[str, Any]]:
     data = _prepare(frame, MONTHLY_COLUMNS)
     rows: list[dict[str, Any]] = []
-    for index, row in data.iterrows():
-        customer = normalize_identifier(row["phone"])
-        when = _event_time(row["month"])
-        if customer is None or pd.isna(when):
-            continue
-        overage = pd.to_numeric(row["data_overage_fee"], errors="coerce")
-        included = pd.to_numeric(row["included_data"], errors="coerce")
-        used = pd.to_numeric(row["used_data"], errors="coerce")
-        if pd.notna(overage) and overage > 0:
+    data["customer_key"] = data["phone"].map(normalize_identifier)
+    data["event_time"] = data["month"].map(_event_time)
+    data["data_overage_fee"] = pd.to_numeric(data["data_overage_fee"], errors="coerce")
+    data = data.dropna(subset=["customer_key", "event_time"])
+    monthly = data.groupby(["customer_key", "event_time"], as_index=False).agg(
+        data_overage_fee=("data_overage_fee", "max")
+    )
+    for index, row in monthly.loc[monthly["data_overage_fee"].gt(0)].iterrows():
+        rows.append(
+            _evidence(
+                row["customer_key"],
+                "流量超套风险型",
+                "DATA_OVERAGE_MONTH_CANDIDATE",
+                "weak",
+                "近半年指标",
+                "流量超套费用",
+                row["event_time"],
+                float(row["data_overage_fee"]),
+                int(index) + 3,
+            )
+        )
+    return rows
+
+
+def _materialize_overage_rules(selected: pd.DataFrame) -> pd.DataFrame:
+    candidates = selected.loc[selected["rule_code"].eq("DATA_OVERAGE_MONTH_CANDIDATE")]
+    rows: list[dict[str, Any]] = []
+    for customer, part in candidates.groupby("customer_key"):
+        monthly = part.sort_values("event_time").drop_duplicates("event_time")
+        if len(monthly) >= 2:
             rows.append(
                 _evidence(
                     customer,
                     "流量超套风险型",
-                    "DATA_OVERAGE_FEE",
+                    "DATA_OVERAGE_MONTHS_GE_2",
                     "strong",
                     "近半年指标",
                     "流量超套费用",
-                    when,
-                    float(overage),
-                    index + 3,
+                    monthly["event_time"].max(),
+                    int(len(monthly)),
+                    int(monthly.iloc[-1]["source_row_no"]),
                 )
             )
-        if pd.notna(included) and pd.notna(used) and used > included:
+        total_fee = pd.to_numeric(monthly["evidence_value"]).sum()
+        if total_fee > 20:
+            latest = monthly.iloc[-1]
             rows.append(
                 _evidence(
                     customer,
                     "流量超套风险型",
-                    "DATA_USAGE_OVER_RESOURCE",
+                    "DATA_OVERAGE_TOTAL_FEE_GT_20",
                     "strong",
                     "近半年指标",
-                    "gprs_used_v/gprs_total",
-                    when,
-                    float(used - included),
-                    index + 3,
+                    "流量超套费用",
+                    latest["event_time"],
+                    float(total_fee),
+                    int(latest["source_row_no"]),
                 )
             )
+    retained = selected.loc[~selected["rule_code"].eq("DATA_OVERAGE_MONTH_CANDIDATE")]
+    return pd.concat(
+        [retained, pd.DataFrame(rows, columns=EVIDENCE_COLUMNS)], ignore_index=True
+    )
+
+
+def extract_household_candidates(
+    frame: pd.DataFrame, as_of: Any
+) -> list[dict[str, Any]]:
+    data = _prepare(frame, HOUSEHOLD_COLUMNS)
+    rows: list[dict[str, Any]] = []
+    for index, row in data.iterrows():
+        customer = normalize_identifier(row["phone"])
+        broadband = normalize_identifier(row["broadband"])
+        bandwidth = pd.to_numeric(row["bandwidth"], errors="coerce")
+        if (
+            customer is None
+            or broadband is None
+            or pd.isna(bandwidth)
+            or bandwidth >= 500
+        ):
+            continue
+        rows.append(
+            _evidence(
+                customer,
+                "家宽体验风险型",
+                "HOME_BROADBAND_BANDWIDTH_LT_500",
+                "strong",
+                "家庭指标",
+                "宽带号码/带宽",
+                _event_time(as_of),
+                float(bandwidth),
+                index + 2,
+            )
+        )
     return rows
 
 
@@ -259,7 +412,9 @@ def extract_structured_event_evidence(
     phone_col, time_col, subtype_col, detail_col, start_row = specs[sheet_name]
     events: list[dict[str, Any]] = []
     evidence: list[dict[str, Any]] = []
-    for offset, values in enumerate(frame.itertuples(index=False, name=None), start=start_row):
+    for offset, values in enumerate(
+        frame.itertuples(index=False, name=None), start=start_row
+    ):
         customer = normalize_identifier(values[phone_col])
         when = _event_time(values[time_col])
         if customer is None or pd.isna(when):
@@ -280,25 +435,13 @@ def extract_structured_event_evidence(
                 "source_row_no": offset,
             }
         )
-        if sheet_name == "限速与加包":
-            evidence.append(
-                _evidence(
-                    customer,
-                    "流量超套风险型",
-                    "SPEED_OR_PACKAGE_EVENT",
-                    "medium",
-                    sheet_name,
-                    "业务类型/加速包资费名称",
-                    when,
-                    subtype or detail,
-                    offset,
-                )
-            )
-        elif sheet_name == "资费变更":
+        if sheet_name == "资费变更":
             direction = pd.to_numeric(values[subtype_col], errors="coerce")
             before = pd.to_numeric(values[5], errors="coerce")
             after = pd.to_numeric(values[6], errors="coerce")
-            if direction == -1 or (pd.notna(before) and pd.notna(after) and after < before):
+            if direction == -1 or (
+                pd.notna(before) and pd.notna(after) and after < before
+            ):
                 evidence.append(
                     _evidence(
                         customer,
@@ -329,7 +472,11 @@ def extract_structured_event_evidence(
     return evidence, pd.DataFrame(events)
 
 
-def extract_text_evidence(sheet_name: str, frame: pd.DataFrame) -> tuple[list[dict[str, Any]], pd.DataFrame]:
+def extract_text_evidence(
+    sheet_name: str,
+    frame: pd.DataFrame,
+    semantic_matcher: SemanticMatcher | None = None,
+) -> tuple[list[dict[str, Any]], pd.DataFrame]:
     phone_column = "手机号码"
     time_column = "时间" if sheet_name == "投诉明细" else "触点时间"
     rows: list[dict[str, Any]] = []
@@ -347,9 +494,10 @@ def extract_text_evidence(sheet_name: str, frame: pd.DataFrame) -> tuple[list[di
             if column in frame.columns and clean_text(row.get(column))
         }
         combined = " | ".join(texts.values())
-        category = clean_text(
-            row.get("投诉节点" if sheet_name == "投诉明细" else "投诉类型")
-        ) or "<MISSING>"
+        category = (
+            clean_text(row.get("投诉节点" if sheet_name == "投诉明细" else "投诉类型"))
+            or "<MISSING>"
+        )
         events.append(
             {
                 "customer_key": customer,
@@ -378,22 +526,25 @@ def extract_text_evidence(sheet_name: str, frame: pd.DataFrame) -> tuple[list[di
             continue
         rules = [
             ("unresolved", "投诉未解决疑似型", "TEXT_UNRESOLVED"),
-            ("traffic_dissatisfaction", "流量超套风险型", "TEXT_TRAFFIC_DISSATISFACTION"),
-            ("price_dissatisfaction", "套餐资费不满疑似型", "TEXT_PRICE_DISSATISFACTION"),
+            (
+                "price_dissatisfaction",
+                "套餐资费不满疑似型",
+                "TEXT_PRICE_DISSATISFACTION",
+            ),
             ("service_blocked", "办理变更退订受阻疑似型", "TEXT_SERVICE_BLOCKED"),
             ("marketing_dispute", "营销宣传争议型", "TEXT_MARKETING_DISPUTE"),
             ("reminder_missing", "提醒告知不足疑似型", "TEXT_REMINDER_MISSING"),
         ]
-        if PATTERNS["broadband_entity"].search(combined) and PATTERNS[
-            "broadband_problem"
-        ].search(combined):
-            rules.append(("broadband_problem", "家宽体验风险型", "TEXT_BROADBAND_PROBLEM"))
         for pattern_name, risk_type, rule_code in rules:
             match = PATTERNS[pattern_name].search(combined)
             if not match or _is_negated(combined, match):
                 continue
             source_column = next(
-                (column for column, text in texts.items() if PATTERNS[pattern_name].search(text)),
+                (
+                    column
+                    for column, text in texts.items()
+                    if PATTERNS[pattern_name].search(text)
+                ),
                 "+".join(texts),
             )
             rows.append(
@@ -410,23 +561,64 @@ def extract_text_evidence(sheet_name: str, frame: pd.DataFrame) -> tuple[list[di
                     _excerpt(combined, match),
                 )
             )
+        if semantic_matcher is not None:
+            semantic_hit = semantic_matcher.match(combined)
+            if semantic_hit is not None:
+                risk_type, prototype, similarity = semantic_hit
+                if not NEGATED.search(combined):
+                    rows.append(
+                        _evidence(
+                            customer,
+                            risk_type,
+                            f"SEMANTIC_{risk_type}",
+                            "medium",
+                            sheet_name,
+                            "+".join(texts),
+                            when,
+                            f"similarity={similarity:.3f}; prototype={prototype}",
+                            source_row,
+                            _excerpt(combined),
+                        )
+                    )
     return rows, pd.DataFrame(events)
 
 
-def _window_derived_evidence(events: pd.DataFrame, as_of: pd.Timestamp, config: RuleConfig) -> list[dict[str, Any]]:
+def _window_derived_evidence(
+    events: pd.DataFrame, as_of: pd.Timestamp, config: RuleConfig
+) -> list[dict[str, Any]]:
     if events.empty:
         return []
     start = as_of - pd.Timedelta(days=config.repeat_days)
     current = events.loc[events["event_time"].between(start, as_of)].copy()
     rows: list[dict[str, Any]] = []
     definitions = [
-        ("complaint", config.repeat_complaint_count, "投诉未解决疑似型", "REPEAT_COMPLAINT", "strong"),
-        ("资费变更", config.repeat_plan_change_count, "套餐资费不满疑似型", "REPEAT_PLAN_CHANGE", "medium"),
-        ("业务订购", config.repeat_subscription_count, "套餐资费不满疑似型", "REPEAT_SUBSCRIPTION", "medium"),
+        (
+            "complaint",
+            config.repeat_complaint_count,
+            "投诉未解决疑似型",
+            "REPEAT_COMPLAINT",
+            "strong",
+        ),
+        (
+            "资费变更",
+            config.repeat_plan_change_count,
+            "套餐资费不满疑似型",
+            "REPEAT_PLAN_CHANGE",
+            "medium",
+        ),
+        (
+            "业务订购",
+            config.repeat_subscription_count,
+            "套餐资费不满疑似型",
+            "REPEAT_SUBSCRIPTION",
+            "medium",
+        ),
     ]
     for kind, threshold, risk_type, rule_code, level in definitions:
         subset = current.loc[current["event_kind"].eq(kind)]
-        for (customer, group), part in subset.groupby(["customer_key", "event_group"], dropna=False):
+        for (customer, group), part in subset.groupby(
+            ["customer_key", "event_group"], dropna=False
+        ):
             if len(part) >= threshold:
                 rows.append(
                     _evidence(
@@ -476,11 +668,46 @@ def score_at(
     if pd.isna(cutoff):
         raise ValueError("as_of must be a valid business date")
     start = cutoff - pd.Timedelta(days=config.lookback_days)
-    selected = base_evidence.loc[base_evidence["event_time"].between(start, cutoff)].copy()
-    derived = pd.DataFrame(_window_derived_evidence(events, cutoff, config), columns=EVIDENCE_COLUMNS)
+    selected = base_evidence.loc[
+        base_evidence["event_time"].between(start, cutoff)
+    ].copy()
+    derived = pd.DataFrame(
+        _window_derived_evidence(events, cutoff, config), columns=EVIDENCE_COLUMNS
+    )
     selected = pd.concat([selected, derived], ignore_index=True)
+    selected = _materialize_overage_rules(selected)
 
-    overage_customers = set(selected.loc[selected["rule_code"].isin({"DATA_OVERAGE_FEE", "DATA_USAGE_OVER_RESOURCE"}), "customer_key"])
+    overage_customers = set(
+        selected.loc[
+            selected["rule_code"].isin(
+                {"DATA_OVERAGE_MONTHS_GE_2", "DATA_OVERAGE_TOTAL_FEE_GT_20"}
+            ),
+            "customer_key",
+        ]
+    )
+    event_start = cutoff - pd.Timedelta(days=config.lookback_days)
+    window_events = events.loc[events["event_time"].between(event_start, cutoff)]
+    complaint_customers = set(
+        window_events.loc[window_events["event_kind"].eq("complaint"), "customer_key"]
+    )
+    special_contact_customers = set(
+        window_events.loc[window_events["event_kind"].eq("狼号"), "customer_key"]
+    )
+    excluded_complaint = overage_customers | special_contact_customers
+    complaint_fallback = selected["risk_type"].eq("投诉未解决疑似型") | selected[
+        "rule_code"
+    ].eq("COMPLAINT_EVENT")
+    selected = selected.loc[
+        ~complaint_fallback | ~selected["customer_key"].isin(excluded_complaint)
+    ].copy()
+    selected.loc[
+        selected["rule_code"].eq("COMPLAINT_EVENT"), ["risk_type", "rule_code"]
+    ] = ["投诉未解决疑似型", "COMPLAINT_NO_OVERAGE_SPECIAL"]
+    excluded_home = overage_customers | complaint_customers
+    selected = selected.loc[
+        ~selected["rule_code"].eq("HOME_BROADBAND_BANDWIDTH_LT_500")
+        | ~selected["customer_key"].isin(excluded_home)
+    ]
     selected = selected.loc[
         ~selected["rule_code"].eq("TEXT_REMINDER_MISSING")
         | selected["customer_key"].isin(overage_customers)
@@ -488,14 +715,18 @@ def score_at(
     selected = selected.drop_duplicates(
         ["customer_key", "risk_type", "rule_code", "source_sheet", "source_row_no"]
     )
-    grouped = (
-        selected.groupby(["customer_key", "risk_type"], as_index=False)
-        .agg(
-            type_score=("points", "sum"),
-            evidence_count=("rule_code", "nunique"),
-            strong_count=("evidence_level", lambda value: int((value == "strong").sum())),
-            latest_evidence_time=("event_time", "max"),
-        )
+    rule_scores = selected.groupby(
+        ["customer_key", "risk_type", "rule_code"], as_index=False
+    ).agg(
+        points=("points", "max"),
+        evidence_level=("evidence_level", "first"),
+        latest_evidence_time=("event_time", "max"),
+    )
+    grouped = rule_scores.groupby(["customer_key", "risk_type"], as_index=False).agg(
+        type_score=("points", "sum"),
+        evidence_count=("rule_code", "nunique"),
+        strong_count=("evidence_level", lambda value: int((value == "strong").sum())),
+        latest_evidence_time=("latest_evidence_time", "max"),
     )
     grid = pd.MultiIndex.from_product(
         [sorted(set(customers)), RISK_TYPES], names=["customer_key", "risk_type"]
@@ -514,15 +745,27 @@ def score_at(
     summaries: list[dict[str, Any]] = []
     for customer in sorted(set(customers)):
         part = hit.loc[hit["customer_key"].eq(customer)]
+        hit_type_count = len(part)
+        if hit_type_count >= config.potential_low_min_types:
+            priority_level = "high"
+        elif hit_type_count >= config.medium_priority_min_types:
+            priority_level = "medium"
+        elif hit_type_count:
+            priority_level = "watch"
+        else:
+            priority_level = "none"
         summaries.append(
             {
                 "customer_key": customer,
                 "as_of": cutoff,
                 "total_risk_score": int(part["type_score"].sum()),
-                "is_potential_low": int(not part.empty),
+                "is_potential_low": int(
+                    hit_type_count >= config.potential_low_min_types
+                ),
+                "priority_level": priority_level,
                 "primary_type": part.iloc[0]["risk_type"] if not part.empty else None,
                 "secondary_types": "|".join(part.iloc[1:]["risk_type"].tolist()),
-                "hit_type_count": len(part),
+                "hit_type_count": hit_type_count,
                 "rule_version": config.version,
             }
         )
@@ -534,8 +777,16 @@ def _customer_features(basic: pd.DataFrame, household: pd.DataFrame) -> pd.DataF
     base["customer_key"] = base["phone"].map(normalize_identifier)
     base = base.dropna(subset=["customer_key"]).drop_duplicates("customer_key")
     keep = [
-        "customer_key", "is_household", "city", "district", "gender", "age",
-        "tenure_months", "device_vendor", "device_type", "main_plan_fee",
+        "customer_key",
+        "is_household",
+        "city",
+        "district",
+        "gender",
+        "age",
+        "tenure_months",
+        "device_vendor",
+        "device_type",
+        "main_plan_fee",
     ]
     result = base[keep].copy()
     home = _prepare(household, HOUSEHOLD_COLUMNS)
@@ -544,7 +795,15 @@ def _customer_features(basic: pd.DataFrame, household: pd.DataFrame) -> pd.DataF
         home[column] = pd.to_numeric(home[column], errors="coerce")
     home = home.dropna(subset=["customer_key"]).drop_duplicates("customer_key")
     return result.merge(
-        home[["customer_key", "is_primary_payer", "bandwidth", "broadband_fee", "broadband_usage"]],
+        home[
+            [
+                "customer_key",
+                "is_primary_payer",
+                "bandwidth",
+                "broadband_fee",
+                "broadband_usage",
+            ]
+        ],
         how="left",
         on="customer_key",
     )
@@ -576,7 +835,9 @@ def _behavior_features(
     for column in metrics:
         data[column] = pd.to_numeric(data[column], errors="coerce")
     data = data.loc[data["month"].between(start, cutoff)]
-    monthly_features = data.groupby("customer_key")[metrics].mean().add_suffix("_mean_6m")
+    monthly_features = (
+        data.groupby("customer_key")[metrics].mean().add_suffix("_mean_6m")
+    )
 
     if events.empty:
         return monthly_features.reset_index()
@@ -599,11 +860,18 @@ def build_type_profile(features: pd.DataFrame, user_type: pd.DataFrame) -> pd.Da
     rows: list[dict[str, Any]] = []
     feature_columns = [column for column in features if column != "customer_key"]
     for risk_type in RISK_TYPES:
-        hit_customers = set(user_type.loc[(user_type["risk_type"] == risk_type) & user_type["is_hit"].eq(1), "customer_key"])
+        hit_customers = set(
+            user_type.loc[
+                (user_type["risk_type"] == risk_type) & user_type["is_hit"].eq(1),
+                "customer_key",
+            ]
+        )
         type_mask = features["customer_key"].isin(hit_customers)
         for cohort, mask in {
             "type_users": type_mask,
-            "other_potential_low": features["customer_key"].isin(set(joined.dropna(subset=["risk_type"])["customer_key"]) - hit_customers),
+            "other_potential_low": features["customer_key"].isin(
+                set(joined.dropna(subset=["risk_type"])["customer_key"]) - hit_customers
+            ),
             "all_users": pd.Series(True, index=features.index),
         }.items():
             part = features.loc[mask]
@@ -611,7 +879,9 @@ def build_type_profile(features: pd.DataFrame, user_type: pd.DataFrame) -> pd.Da
                 numeric = pd.to_numeric(part[column], errors="coerce")
                 is_numeric = numeric.notna().mean() >= 0.8 if len(part) else False
                 if is_numeric:
-                    comparison = pd.to_numeric(features.loc[~type_mask, column], errors="coerce")
+                    comparison = pd.to_numeric(
+                        features.loc[~type_mask, column], errors="coerce"
+                    )
                     valid_numeric = numeric.dropna()
                     valid_comparison = comparison.dropna()
                     p_value = (
@@ -619,33 +889,83 @@ def build_type_profile(features: pd.DataFrame, user_type: pd.DataFrame) -> pd.Da
                         if len(valid_numeric) and len(valid_comparison)
                         else np.nan
                     )
-                    rows.append({
-                        "risk_type": risk_type, "cohort": cohort, "feature_name": column,
-                        "feature_type": "numeric", "feature_value": None,
-                        "user_count": len(part), "missing_rate": float(numeric.isna().mean()) if len(part) else np.nan,
-                        "value_count": int(numeric.notna().sum()), "value_rate": None,
-                        "mean": numeric.mean(), "median": numeric.median(),
-                        "effect_size": standardized_mean_difference(valid_numeric, valid_comparison),
-                        "lift": None, "p_value": p_value,
-                    })
+                    rows.append(
+                        {
+                            "risk_type": risk_type,
+                            "cohort": cohort,
+                            "feature_name": column,
+                            "feature_type": "numeric",
+                            "feature_value": None,
+                            "user_count": len(part),
+                            "missing_rate": (
+                                float(numeric.isna().mean()) if len(part) else np.nan
+                            ),
+                            "value_count": int(numeric.notna().sum()),
+                            "value_rate": None,
+                            "mean": numeric.mean(),
+                            "median": numeric.median(),
+                            "effect_size": standardized_mean_difference(
+                                valid_numeric, valid_comparison
+                            ),
+                            "lift": None,
+                            "p_value": p_value,
+                        }
+                    )
                 else:
                     values = part[column].fillna("<MISSING>").astype(str)
                     counts = values.value_counts().head(20)
                     for value, count in counts.items():
-                        type_rate = (features.loc[type_mask, column].fillna("<MISSING>").astype(str) == value).mean() if type_mask.any() else np.nan
-                        all_rate = (features[column].fillna("<MISSING>").astype(str) == value).mean() if len(features) else np.nan
-                        table = pd.crosstab(type_mask, features[column].fillna("<MISSING>").astype(str) == value)
-                        p_value = stats.chi2_contingency(table, correction=False)[1] if table.shape == (2, 2) else np.nan
-                        rows.append({
-                            "risk_type": risk_type, "cohort": cohort, "feature_name": column,
-                            "feature_type": "categorical", "feature_value": value,
-                            "user_count": len(part), "missing_rate": float(part[column].isna().mean()) if len(part) else np.nan,
-                            "value_count": int(count), "value_rate": count / len(part) if len(part) else np.nan,
-                            "mean": None, "median": None,
-                            "effect_size": None,
-                            "lift": type_rate / all_rate if all_rate else np.nan,
-                            "p_value": p_value,
-                        })
+                        type_rate = (
+                            (
+                                features.loc[type_mask, column]
+                                .fillna("<MISSING>")
+                                .astype(str)
+                                == value
+                            ).mean()
+                            if type_mask.any()
+                            else np.nan
+                        )
+                        all_rate = (
+                            (
+                                features[column].fillna("<MISSING>").astype(str)
+                                == value
+                            ).mean()
+                            if len(features)
+                            else np.nan
+                        )
+                        table = pd.crosstab(
+                            type_mask,
+                            features[column].fillna("<MISSING>").astype(str) == value,
+                        )
+                        p_value = (
+                            stats.chi2_contingency(table, correction=False)[1]
+                            if table.shape == (2, 2)
+                            else np.nan
+                        )
+                        rows.append(
+                            {
+                                "risk_type": risk_type,
+                                "cohort": cohort,
+                                "feature_name": column,
+                                "feature_type": "categorical",
+                                "feature_value": value,
+                                "user_count": len(part),
+                                "missing_rate": (
+                                    float(part[column].isna().mean())
+                                    if len(part)
+                                    else np.nan
+                                ),
+                                "value_count": int(count),
+                                "value_rate": (
+                                    count / len(part) if len(part) else np.nan
+                                ),
+                                "mean": None,
+                                "median": None,
+                                "effect_size": None,
+                                "lift": type_rate / all_rate if all_rate else np.nan,
+                                "p_value": p_value,
+                            }
+                        )
     result = pd.DataFrame(rows)
     if not result.empty:
         result["fdr"] = benjamini_hochberg(result["p_value"])
@@ -653,7 +973,10 @@ def build_type_profile(features: pd.DataFrame, user_type: pd.DataFrame) -> pd.Da
 
 
 def _survey_labels(frame: pd.DataFrame) -> pd.DataFrame:
-    headers = [clean_text(column) or f"unnamed_{index}" for index, column in enumerate(frame.columns)]
+    headers = [
+        clean_text(column) or f"unnamed_{index}"
+        for index, column in enumerate(frame.columns)
+    ]
     data = frame.copy()
     data.columns = headers
     score_columns = [_score_column(headers, code) for code in SCORE_CODES]
@@ -663,22 +986,41 @@ def _survey_labels(frame: pd.DataFrame) -> pd.DataFrame:
         survey_month = parse_business_datetime(row.get("调研时间"))
         if customer is None or pd.isna(survey_month):
             continue
-        rows.append({
-            "survey_id": normalize_identifier(row.get("调研流水号")),
-            "customer_key": customer,
-            "survey_month": survey_month.to_period("M").to_timestamp(),
-            "segment_label": segment_scores(row[column] for column in score_columns)[0],
-        })
+        rows.append(
+            {
+                "survey_id": normalize_identifier(row.get("调研流水号")),
+                "customer_key": customer,
+                "survey_month": survey_month.to_period("M").to_timestamp(),
+                "segment_label": segment_scores(
+                    row[column] for column in score_columns
+                )[0],
+            }
+        )
     return pd.DataFrame(rows)
 
 
 def build_validation_detail(
-    surveys: pd.DataFrame, base_evidence: pd.DataFrame, events: pd.DataFrame, config: RuleConfig
+    surveys: pd.DataFrame,
+    base_evidence: pd.DataFrame,
+    events: pd.DataFrame,
+    config: RuleConfig,
+    show_progress: bool = False,
 ) -> pd.DataFrame:
     rows: list[pd.DataFrame] = []
-    for survey_month, part in surveys.loc[surveys["segment_label"].isin(["low", "non_low"])].groupby("survey_month"):
-        users, _, _ = score_at(base_evidence, events, part["customer_key"], survey_month, config)
-        evaluated = part.merge(users, on="customer_key", how="left", validate="many_to_one")
+    labeled = surveys.loc[surveys["segment_label"].isin(["low", "non_low"])]
+    month_groups = list(labeled.groupby("survey_month"))
+    total_months = len(month_groups)
+    for index, (survey_month, part) in enumerate(month_groups, start=1):
+        if show_progress:
+            _progress(
+                f"[7/8] Validating survey month {index}/{total_months}: {survey_month:%Y-%m} ({len(part)} surveys)"
+            )
+        users, _, _ = score_at(
+            base_evidence, events, part["customer_key"], survey_month, config
+        )
+        evaluated = part.merge(
+            users, on="customer_key", how="left", validate="many_to_one"
+        )
         evaluated["actual_segment"] = evaluated.pop("segment_label")
         evaluated["actual_low"] = evaluated["actual_segment"].eq("low").astype(int)
         evaluated["predicted_low"] = evaluated["is_potential_low"].fillna(0).astype(int)
@@ -738,7 +1080,9 @@ def _validation_metric_row(
         "jaccard": jaccard,
         "actual_low_rate": actual_rate,
         "predicted_low_rate": predicted_rate,
-        "lift": precision / actual_rate if actual_rate and pd.notna(precision) else np.nan,
+        "lift": (
+            precision / actual_rate if actual_rate and pd.notna(precision) else np.nan
+        ),
     }
 
 
@@ -747,8 +1091,11 @@ def build_validation(
     base_evidence: pd.DataFrame,
     events: pd.DataFrame,
     config: RuleConfig,
+    show_progress: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    detail = build_validation_detail(surveys, base_evidence, events, config)
+    detail = build_validation_detail(
+        surveys, base_evidence, events, config, show_progress=show_progress
+    )
     if detail.empty:
         return pd.DataFrame(columns=VALIDATION_COLUMNS), detail
 
@@ -762,7 +1109,9 @@ def build_validation(
             )
         )
         for risk_type in RISK_TYPES:
-            predicted = part["primary_type"].eq(risk_type) | part["secondary_types"].fillna("").str.split("|").map(lambda values: risk_type in values)
+            predicted = part["primary_type"].eq(risk_type) | part[
+                "secondary_types"
+            ].fillna("").str.split("|").map(lambda values: risk_type in values)
             metric_rows.append(
                 _validation_metric_row(part, survey_month, risk_type, predicted, config)
             )
@@ -772,34 +1121,87 @@ def build_validation(
 def _rule_dictionary(config: RuleConfig) -> pd.DataFrame:
     records = []
     for name, pattern in PATTERNS.items():
-        records.append({
-            "rule_code": name, "source": "投诉明细/触点轨迹", "condition": pattern.pattern,
-            "evidence_level": "strong", "threshold": None, "rule_version": config.version,
-        })
+        records.append(
+            {
+                "rule_code": name,
+                "source": "投诉明细/触点轨迹",
+                "condition": pattern.pattern,
+                "evidence_level": "strong",
+                "threshold": None,
+                "rule_version": config.version,
+            }
+        )
+    if config.semantic_enabled:
+        for risk_type, prototypes in SEMANTIC_PROTOTYPES.items():
+            records.append(
+                {
+                    "rule_code": f"SEMANTIC_{risk_type}",
+                    "source": "投诉明细/触点轨迹",
+                    "condition": "本地中文向量与风险原型的最高余弦相似度达到阈值",
+                    "evidence_level": "medium",
+                    "threshold": config.semantic_threshold,
+                    "rule_version": config.version,
+                }
+            )
     for code, source, condition, level in [
-        ("COMPLAINT_EVENT", "投诉明细", "窗口内存在投诉", "strong"),
-        ("DATA_OVERAGE_FEE", "近半年指标.流量超套费用", "> 0", "strong"),
-        ("DATA_USAGE_OVER_RESOURCE", "近半年指标.gprs_used_v/gprs_total", "gprs_used_v > gprs_total", "strong"),
+        (
+            "COMPLAINT_NO_OVERAGE_SPECIAL",
+            "投诉明细/近半年指标/狼号",
+            "183天内有投诉，且未命中流量超套、无狼号接触",
+            "strong",
+        ),
+        (
+            "HOME_BROADBAND_BANDWIDTH_LT_500",
+            "家庭指标/投诉明细/近半年指标",
+            "有宽带号且带宽<500M，并且183天内无投诉、未命中流量超套",
+            "strong",
+        ),
+        (
+            "DATA_OVERAGE_MONTHS_GE_2",
+            "近半年指标.流量超套费用",
+            "183天内流量超套费用>0的不同月份数>=2",
+            "strong",
+        ),
+        (
+            "DATA_OVERAGE_TOTAL_FEE_GT_20",
+            "近半年指标.流量超套费用",
+            "183天内按月去重后的流量超套费用累计>20元",
+            "strong",
+        ),
         ("PLAN_DOWNGRADE", "资费变更", "变更标识=-1或变更后费用下降", "medium"),
         ("SUBSCRIPTION_CANCEL", "业务订购.订购类型", "包含退订", "medium"),
-        ("SPEED_OR_PACKAGE_EVENT", "限速与加包", "窗口内存在记录", "medium"),
     ]:
-        records.append({
-            "rule_code": code, "source": source, "condition": condition,
-            "evidence_level": level, "threshold": None, "rule_version": config.version,
-        })
+        records.append(
+            {
+                "rule_code": code,
+                "source": source,
+                "condition": condition,
+                "evidence_level": level,
+                "threshold": None,
+                "rule_version": config.version,
+            }
+        )
     for code, source, threshold, level in [
         ("REPEAT_COMPLAINT", "投诉明细", config.repeat_complaint_count, "strong"),
         ("REPEAT_PLAN_CHANGE", "资费变更", config.repeat_plan_change_count, "medium"),
         ("REPEAT_SUBSCRIPTION", "业务订购", config.repeat_subscription_count, "medium"),
-        ("FREQUENT_NEGATIVE_CONTACT", "触点轨迹", config.negative_contact_count, "strong"),
+        (
+            "FREQUENT_NEGATIVE_CONTACT",
+            "触点轨迹",
+            config.negative_contact_count,
+            "strong",
+        ),
     ]:
-        records.append({
-            "rule_code": code, "source": source,
-            "condition": f"{config.repeat_days}天窗口内次数达到阈值",
-            "evidence_level": level, "threshold": threshold,
-            "rule_version": config.version,
-        })
+        records.append(
+            {
+                "rule_code": code,
+                "source": source,
+                "condition": f"{config.repeat_days}天窗口内次数达到阈值",
+                "evidence_level": level,
+                "threshold": threshold,
+                "rule_version": config.version,
+            }
+        )
     return pd.DataFrame(records)
 
 
@@ -811,55 +1213,152 @@ def run_potential_low(
 ) -> Path:
     config = config or RuleConfig()
     output_dir.mkdir(parents=True, exist_ok=True)
+    cutoff = _event_time(as_of)
+    if pd.isna(cutoff):
+        raise ValueError("as_of must be a valid business date")
+    _progress(
+        f"[1/8] Starting potential-low run: as_of={cutoff.date()} version={config.version}"
+    )
     base_rows: list[dict[str, Any]] = []
     event_frames: list[pd.DataFrame] = []
     quality: list[dict[str, Any]] = []
 
-    required = ["基础指标", "家庭指标", "近半年指标", "业务订购", "投诉明细", "资费变更", "限速与加包", "狼号", "触点轨迹"]
+    required = [
+        "基础指标",
+        "家庭指标",
+        "近半年指标",
+        "业务订购",
+        "投诉明细",
+        "资费变更",
+        "限速与加包",
+        "狼号",
+        "触点轨迹",
+    ]
     frames: dict[str, pd.DataFrame] = {}
+    semantic_matcher = (
+        SemanticMatcher(config.semantic_model, config.semantic_threshold)
+        if config.semantic_enabled
+        else None
+    )
+    if config.semantic_enabled:
+        _progress(
+            f"[info] Semantic matching enabled: model={config.semantic_model}, threshold={config.semantic_threshold:.2f}"
+        )
+    _progress(f"[2/8] Reading required sheets from {workbook}")
     for sheet in required:
         try:
             frames[sheet] = _read_sheet(workbook, sheet)
-            quality.append({"sheet": sheet, "status": "available", "row_count": len(frames[sheet]), "message": None})
+            _progress(f"  - Loaded {sheet}: {len(frames[sheet])} rows")
+            quality.append(
+                {
+                    "sheet": sheet,
+                    "status": "available",
+                    "row_count": len(frames[sheet]),
+                    "message": None,
+                }
+            )
         except Exception as error:
-            quality.append({"sheet": sheet, "status": "unavailable", "row_count": 0, "message": str(error)})
+            _progress(f"  - Skipped {sheet}: {error}")
+            quality.append(
+                {
+                    "sheet": sheet,
+                    "status": "unavailable",
+                    "row_count": 0,
+                    "message": str(error),
+                }
+            )
     if "基础指标" not in frames or "近半年指标" not in frames:
         raise ValueError("基础指标 and 近半年指标 are required")
 
+    _progress("[3/8] Extracting monthly and household evidence")
     base_rows.extend(extract_monthly_evidence(frames["近半年指标"]))
+    if "家庭指标" in frames:
+        base_rows.extend(extract_household_candidates(frames["家庭指标"], as_of))
+    _progress(f"  - Evidence rows after monthly/household extraction: {len(base_rows)}")
+    _progress("[4/8] Extracting structured event evidence")
     for sheet in ("业务订购", "资费变更", "限速与加包", "狼号"):
         if sheet in frames:
             evidence, events = extract_structured_event_evidence(sheet, frames[sheet])
             base_rows.extend(evidence)
             event_frames.append(events)
+            _progress(
+                f"  - {sheet}: {len(evidence)} evidence rows, {len(events)} event rows"
+            )
+    _progress("[5/8] Extracting text evidence")
     for sheet in ("投诉明细", "触点轨迹"):
         if sheet in frames:
-            evidence, events = extract_text_evidence(sheet, frames[sheet])
+            evidence, events = extract_text_evidence(
+                sheet, frames[sheet], semantic_matcher
+            )
             base_rows.extend(evidence)
             event_frames.append(events)
+            _progress(
+                f"  - {sheet}: {len(evidence)} evidence rows, {len(events)} event rows"
+            )
 
     base = pd.DataFrame(base_rows, columns=EVIDENCE_COLUMNS)
-    events = pd.concat(event_frames, ignore_index=True) if event_frames else pd.DataFrame(
-        columns=["customer_key", "event_time", "event_kind", "event_group", "source_row_no", "negative"]
+    events = (
+        pd.concat(event_frames, ignore_index=True)
+        if event_frames
+        else pd.DataFrame(
+            columns=[
+                "customer_key",
+                "event_time",
+                "event_kind",
+                "event_group",
+                "source_row_no",
+                "negative",
+            ]
+        )
     )
-    features = _customer_features(frames["基础指标"], frames.get("家庭指标", pd.DataFrame(columns=range(len(HOUSEHOLD_COLUMNS)))))
+    _progress(
+        f"[6/8] Building features and scoring users: {len(base)} evidence rows, {len(events)} event rows"
+    )
+    features = _customer_features(
+        frames["基础指标"],
+        frames.get("家庭指标", pd.DataFrame(columns=range(len(HOUSEHOLD_COLUMNS)))),
+    )
     behavior = _behavior_features(frames["近半年指标"], events, as_of, config)
     features = features.merge(behavior, how="left", on="customer_key")
-    users, user_type, evidence = score_at(base, events, features["customer_key"], as_of, config)
+    users, user_type, evidence = score_at(
+        base, events, features["customer_key"], as_of, config
+    )
     available_count = sum(sheet in frames for sheet in required)
     users["data_coverage_rate"] = available_count / len(required)
     profile = build_type_profile(features, user_type)
+    _progress(
+        f"  - Scored {len(users)} users; high={int(users['is_potential_low'].sum())}, hit_types={int(user_type['is_hit'].sum())}"
+    )
 
     validation = pd.DataFrame(columns=VALIDATION_COLUMNS)
     validation_detail = pd.DataFrame(columns=VALIDATION_DETAIL_COLUMNS)
     try:
+        _progress("[7/8] Building historical validation outputs")
         survey = _read_sheet(workbook, "测评明细")
         validation, validation_detail = build_validation(
-            _survey_labels(survey), base, events, config
+            _survey_labels(survey), base, events, config, show_progress=True
         )
-        quality.append({"sheet": "测评明细", "status": "validation_available", "row_count": len(survey), "message": None})
+        _progress(
+            f"  - Validation complete: {len(validation_detail)} survey records, {len(validation)} metric rows"
+        )
+        quality.append(
+            {
+                "sheet": "测评明细",
+                "status": "validation_available",
+                "row_count": len(survey),
+                "message": None,
+            }
+        )
     except Exception as error:
-        quality.append({"sheet": "测评明细", "status": "validation_unavailable", "row_count": 0, "message": str(error)})
+        _progress(f"  - Validation skipped: {error}")
+        quality.append(
+            {
+                "sheet": "测评明细",
+                "status": "validation_unavailable",
+                "row_count": 0,
+                "message": str(error),
+            }
+        )
 
     outputs = {
         "potential_low_user.csv": users,
@@ -871,14 +1370,33 @@ def run_potential_low(
         "rule_dictionary.csv": _rule_dictionary(config),
         "batch_quality.csv": pd.DataFrame(quality),
     }
+    _progress("[8/8] Writing output files")
     files = []
     for name, frame in outputs.items():
         path = output_dir / name
         frame.to_csv(path, index=False, encoding="utf-8-sig")
-        files.append({"file": name, "rows": len(frame), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+        _progress(f"  - Wrote {name}: {len(frame)} rows")
+        files.append(
+            {
+                "file": name,
+                "rows": len(frame),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
     manifest = output_dir / "manifest.json"
-    manifest.write_text(json.dumps({
-        "generated_at": datetime.now(UTC).isoformat(), "input": str(workbook),
-        "as_of": str(_event_time(as_of)), "config": asdict(config), "files": files,
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    manifest.write_text(
+        json.dumps(
+            {
+                "generated_at": datetime.now(UTC).isoformat(),
+                "input": str(workbook),
+                "as_of": str(_event_time(as_of)),
+                "config": asdict(config),
+                "files": files,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    _progress(f"Completed potential-low run. Manifest: {manifest}")
     return manifest
