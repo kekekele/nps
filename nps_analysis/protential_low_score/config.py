@@ -15,7 +15,6 @@ def load_config(
     data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     optimization_data = data.get("optimization", {})
     optimization = OptimizationConfig(
-        random_seed=int(optimization_data.get("random_seed", 20260907)),
         selection_mode=optimization_data.get("selection_mode", "balanced"),
         beta=float(optimization_data.get("beta", 1.0)),
         threshold_candidates=tuple(

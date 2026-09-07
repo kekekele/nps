@@ -25,7 +25,6 @@ class Rule:
 
 @dataclass(frozen=True)
 class OptimizationConfig:
-    random_seed: int = 20260907
     selection_mode: str = "balanced"
     beta: float = 1.0
     threshold_candidates: tuple[int, ...] = (1, 2, 3, 4, 5)
