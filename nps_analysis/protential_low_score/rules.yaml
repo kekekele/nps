@@ -7,6 +7,16 @@ optimization:
   threshold_candidates: [1, 2, 3, 4, 5, 6]
 
 rules:
+  - rule_id: JOURNEY_COMPLAINT_RECENT
+    risk_type: 投诉未解决疑似型
+    condition:
+      kind: journey_count
+      within_days: 183
+      actions: [投诉]
+      min_count: 1
+    weight_candidates: [0, 1, 2]
+    reason: 近183天发生投诉
+
   - rule_id: JOURNEY_COMPLAINT_REPEAT
     risk_type: 投诉未解决疑似型
     condition:
@@ -16,6 +26,66 @@ rules:
       min_count: 2
     weight_candidates: [1, 2, 3]
     reason: 近90天重复投诉
+
+  - rule_id: JOURNEY_COMPLAINT_UNRESOLVED
+    risk_type: 投诉未解决疑似型
+    condition:
+      kind: journey_category_count
+      within_days: 183
+      actions: [投诉]
+      field: intent
+      patterns: [未解决, 受阻, 服务质量]
+      min_count: 1
+    weight_candidates: [0, 1, 2, 3]
+    reason: 投诉涉及未解决或受阻问题
+
+  - rule_id: COMPLAINT_FALLBACK
+    risk_type: 投诉未解决疑似型
+    condition:
+      kind: all_of
+      conditions:
+        - kind: journey_count
+          within_days: 183
+          actions: [投诉]
+          min_count: 1
+        - kind: none_of
+          conditions:
+            - kind: monthly_positive_count
+              metric: over_gprs_fee
+              recent_months: 6
+              minimum: 0
+              min_count: 2
+            - kind: journey_count
+              within_days: 183
+              actions: [狼号感染]
+              min_count: 1
+    weight_candidates: [0, 1, 2]
+    reason: 投诉且无超套或狼号前置风险
+
+  - rule_id: HOME_BROADBAND_LOW_BANDWIDTH
+    risk_type: 家宽体验风险型
+    condition:
+      kind: all_of
+      conditions:
+        - kind: static_numeric_gt
+          field: broadband_bandwidth
+          value: 0
+        - kind: static_numeric_lt
+          field: broadband_bandwidth
+          value: 500
+        - kind: none_of
+          conditions:
+            - kind: journey_count
+              within_days: 183
+              actions: [投诉]
+              min_count: 1
+            - kind: monthly_positive_count
+              metric: over_gprs_fee
+              recent_months: 6
+              minimum: 0
+              min_count: 2
+    weight_candidates: [0, 1, 2]
+    reason: 有家宽且带宽低于500M
 
   - rule_id: JOURNEY_PRICE_DISPUTE
     risk_type: 套餐资费不满疑似型
@@ -53,6 +123,18 @@ rules:
     weight_candidates: [1, 2, 3]
     reason: 近期宽带投诉
 
+  - rule_id: JOURNEY_BROADBAND_PROBLEM
+    risk_type: 家宽体验风险型
+    condition:
+      kind: journey_category_count
+      within_days: 90
+      actions: [咨询, 投诉]
+      field: intent
+      patterns: [网络, 通信, 设备故障]
+      min_count: 1
+    weight_candidates: [0, 1, 2, 3]
+    reason: 近期咨询或投诉宽带网络故障
+
   - rule_id: DATA_OVERAGE_MONTHS_GE_2
     risk_type: 流量超套风险型
     condition:
@@ -74,6 +156,62 @@ rules:
     weight_candidates: [1, 2, 3]
     reason: 流量超套费用累计超过20元
 
+  - rule_id: JOURNEY_DATA_DISSATISFACTION
+    risk_type: 流量超套风险型
+    condition:
+      kind: journey_category_count
+      within_days: 90
+      actions: [咨询, 投诉]
+      field: business
+      patterns: [流量服务, 限速服务, 流量/上网]
+      min_count: 1
+    weight_candidates: [0, 1, 2, 3]
+    reason: 近期存在流量或限速问题
+
+  - rule_id: JOURNEY_TARIFF_COMPLAINT
+    risk_type: 套餐资费不满疑似型
+    condition:
+      kind: journey_category_count
+      within_days: 183
+      actions: [投诉]
+      field: business
+      patterns: [套餐资费, 资费套餐, 账户/费用]
+      min_count: 1
+    weight_candidates: [0, 1, 2, 3]
+    reason: 近期投诉套餐或费用问题
+
+  - rule_id: JOURNEY_PLAN_DOWNGRADE
+    risk_type: 套餐资费不满疑似型
+    condition:
+      kind: journey_category_count
+      within_days: 183
+      actions: [资费变更]
+      field: intent
+      patterns: [降档]
+      min_count: 1
+    weight_candidates: [0, 1, 2]
+    reason: 近期套餐降档
+
+  - rule_id: JOURNEY_CANCEL_RECENT
+    risk_type: 套餐资费不满疑似型
+    condition:
+      kind: journey_count
+      within_days: 90
+      actions: [退订]
+      min_count: 1
+    weight_candidates: [0, 1, 2]
+    reason: 近期退订业务
+
+  - rule_id: JOURNEY_PLAN_CHANGE_REPEAT
+    risk_type: 套餐资费不满疑似型
+    condition:
+      kind: journey_count
+      within_days: 90
+      actions: [资费变更]
+      min_count: 2
+    weight_candidates: [0, 1, 2]
+    reason: 近期多次资费变更
+
   - rule_id: JOURNEY_CONTACTS_GE_3_30D
     risk_type: 高频触点负面型
     condition:
@@ -83,3 +221,102 @@ rules:
       min_count: 3
     weight_candidates: [1, 2]
     reason: 近30天多次咨询或投诉
+
+  - rule_id: JOURNEY_OPERATION_REPEAT
+    risk_type: 办理变更退订受阻疑似型
+    condition:
+      kind: journey_count
+      within_days: 30
+      actions: [办理, 资费变更, 退订]
+      min_count: 3
+    weight_candidates: [0, 1, 2]
+    reason: 近30天多次办理、变更或退订
+
+  - rule_id: JOURNEY_CANCEL_AFTER_CONSULT
+    risk_type: 办理变更退订受阻疑似型
+    condition:
+      kind: journey_sequence
+      within_days: 30
+      first:
+        actions: [咨询]
+      second:
+        actions: [退订]
+    weight_candidates: [0, 1, 2]
+    reason: 咨询后发生退订
+
+  - rule_id: JOURNEY_MARKETING_COMPLAINT
+    risk_type: 营销宣传争议型
+    condition:
+      kind: journey_category_count
+      within_days: 183
+      actions: [投诉]
+      field: business
+      patterns: [营销合约]
+      min_count: 1
+    weight_candidates: [0, 1, 2, 3]
+    reason: 近期投诉营销或合约问题
+
+  - rule_id: JOURNEY_UNINFORMED_HANDLING
+    risk_type: 营销宣传争议型
+    condition:
+      kind: journey_category_count
+      within_days: 183
+      actions: [咨询, 投诉]
+      field: intent
+      patterns: [不知情, 未告知, 服务规范]
+      min_count: 1
+    weight_candidates: [0, 1, 2, 3]
+    reason: 近期存在不知情或未告知问题
+
+  - rule_id: REMINDER_WITH_OVERAGE
+    risk_type: 提醒告知不足疑似型
+    condition:
+      kind: all_of
+      conditions:
+        - kind: any_of
+          conditions:
+            - kind: monthly_positive_count
+              metric: over_gprs_fee
+              recent_months: 6
+              minimum: 0
+              min_count: 2
+            - kind: monthly_sum_gt
+              metric: over_gprs_fee
+              recent_months: 6
+              value: 20
+        - kind: journey_category_count
+          within_days: 90
+          actions: [咨询, 投诉]
+          field: intent
+          patterns: [未告知, 费用, 资费]
+          min_count: 1
+    weight_candidates: [0, 1, 2, 3]
+    reason: 超套且存在费用告知问题
+
+  - rule_id: JOURNEY_CONTACTS_GE_5_90D
+    risk_type: 高频触点负面型
+    condition:
+      kind: journey_count
+      within_days: 90
+      actions: [咨询, 投诉]
+      min_count: 5
+    weight_candidates: [0, 1, 2, 3]
+    reason: 近90天多次咨询或投诉
+
+  - rule_id: JOURNEY_NEGATIVE_CONTACT_REPEAT
+    risk_type: 高频触点负面型
+    condition:
+      kind: all_of
+      conditions:
+        - kind: journey_count
+          within_days: 90
+          actions: [咨询, 投诉]
+          min_count: 2
+        - kind: journey_category_count
+          within_days: 90
+          actions: [咨询, 投诉]
+          field: intent
+          patterns: [费用, 网络, 通信, 受阻, 服务质量]
+          min_count: 1
+    weight_candidates: [0, 1, 2, 3]
+    reason: 多次负面咨询或投诉

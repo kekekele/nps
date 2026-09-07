@@ -68,6 +68,74 @@ def test_rule_optimization_predicts_without_exposing_scores():
     assert "risk_score" not in results["low-0"]
 
 
+def test_configurable_composite_and_sequence_conditions():
+    profiles = [
+        _profile(
+            "u1",
+            [
+                {"event_time": "2026-08-01", "action": "咨询", "intent": "费用问题"},
+                {"event_time": "2026-08-05", "action": "退订", "intent": "退订"},
+            ],
+            overage=[0, 25],
+        ),
+        _profile("u2", [{"event_time": "2026-08-01", "action": "投诉"}], overage=[0, 25]),
+    ]
+    rules = [
+        Rule(
+            "consult_then_cancel",
+            "办理变更退订受阻疑似型",
+            {
+                "kind": "journey_sequence",
+                "within_days": 30,
+                "first": {"actions": ["咨询"]},
+                "second": {"actions": ["退订"]},
+            },
+            (1,),
+            "咨询后退订",
+        ),
+        Rule(
+            "overage_without_complaint",
+            "提醒告知不足疑似型",
+            {
+                "kind": "all_of",
+                "conditions": [
+                    {
+                        "kind": "any_of",
+                        "conditions": [
+                            {"kind": "monthly_sum_gt", "metric": "over_gprs_fee", "recent_months": 2, "value": 20}
+                        ],
+                    },
+                    {
+                        "kind": "none_of",
+                        "conditions": [
+                            {"kind": "journey_count", "within_days": 30, "actions": ["投诉"], "min_count": 1}
+                        ],
+                    },
+                ],
+            },
+            (1,),
+            "超套且无投诉",
+        ),
+    ]
+
+    hits = build_hits(profiles, rules, "2026-08-14")
+
+    assert hits["u1"] == {"consult_then_cancel": True, "overage_without_complaint": True}
+    assert hits["u2"] == {"consult_then_cancel": False, "overage_without_complaint": False}
+
+
+def test_build_hits_reports_progress_per_enabled_rule():
+    rules = [
+        Rule("enabled", "测试", {"kind": "journey_count", "within_days": 1, "actions": ["投诉"], "min_count": 1}, (1,), "启用"),
+        Rule("disabled", "测试", {"kind": "journey_count", "within_days": 1, "actions": ["投诉"], "min_count": 1}, (1,), "禁用", enabled=False),
+    ]
+    progress = []
+
+    build_hits([_profile("u1")], rules, "2026-08-14", progress=lambda index, total, rule: progress.append((index, total, rule.rule_id)))
+
+    assert progress == [(1, 1, "enabled")]
+
+
 def test_cli_writes_predictions_and_optimization_report(tmp_path, monkeypatch):
     profiles_path = tmp_path / "profiles.jsonl"
     labels_path = tmp_path / "labels.csv"

@@ -30,6 +30,13 @@ def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
         writer.writerows(rows)
 
 
+def _show_rule_progress(index: int, total: int, rule: object) -> None:
+    rule_id = getattr(rule, "rule_id")
+    print(f"\r      [{index:>2}/{total}] {rule_id}", end="", flush=True)
+    if index == total:
+        print()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Optimize configurable potential low-score rules."
@@ -63,7 +70,12 @@ def main() -> None:
     print(f"      profiles={len(profiles)}, optimization_labels={len(labels)}")
 
     print("[3/6] Calculating rule hits...")
-    hits = build_hits(profiles, rules, windows["feature_end"])
+    hits = build_hits(
+        profiles,
+        rules,
+        windows["feature_end"],
+        progress=_show_rule_progress,
+    )
     print(f"      profiles_with_hits={len(hits)}")
 
     print("[4/6] Optimizing rule weights and decision threshold...")

@@ -4,9 +4,8 @@ import csv
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from itertools import product
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -80,25 +79,41 @@ def _matches_text(value: Any, patterns: list[str]) -> bool:
     return any(pattern in text for pattern in patterns)
 
 
-def _rule_hit(profile: dict[str, Any], rule: Rule, as_of: datetime) -> bool:
-    condition = rule.condition
+def _event_matches(event: dict[str, Any], condition: dict[str, Any]) -> bool:
+    actions = set(condition.get("actions", []))
+    if actions and event.get("action") not in actions:
+        return False
+    field = condition.get("field")
+    patterns = list(condition.get("patterns", []))
+    return not field or not patterns or _matches_text(event.get(field), patterns)
+
+
+def _condition_hit(profile: dict[str, Any], condition: dict[str, Any], as_of: datetime) -> bool:
     kind = condition["kind"]
+    if kind == "all_of":
+        return all(_condition_hit(profile, item, as_of) for item in condition["conditions"])
+    if kind == "any_of":
+        return any(_condition_hit(profile, item, as_of) for item in condition["conditions"])
+    if kind == "none_of":
+        return not any(_condition_hit(profile, item, as_of) for item in condition["conditions"])
     if kind == "journey_count":
         events = _events(profile, as_of, int(condition["within_days"]))
-        actions = set(condition.get("actions", []))
-        return sum(event.get("action") in actions for event in events) >= int(
-            condition["min_count"]
-        )
+        return sum(_event_matches(event, condition) for event in events) >= int(condition["min_count"])
     if kind == "journey_category_count":
         events = _events(profile, as_of, int(condition["within_days"]))
-        actions = set(condition.get("actions", []))
-        field = condition.get("field", "intent")
-        patterns = list(condition.get("patterns", []))
-        count = sum(
-            event.get("action") in actions and _matches_text(event.get(field), patterns)
-            for event in events
+        return sum(_event_matches(event, condition) for event in events) >= int(condition["min_count"])
+    if kind == "journey_sequence":
+        events = sorted(
+            _events(profile, as_of, int(condition["within_days"])),
+            key=lambda event: parse_business_datetime(event.get("event_time")),
         )
-        return count >= int(condition["min_count"])
+        first = condition["first"]
+        second = condition["second"]
+        return any(
+            _event_matches(previous, first)
+            and any(_event_matches(later, second) for later in events[index + 1 :])
+            for index, previous in enumerate(events)
+        )
     if kind == "monthly_positive_count":
         values = list(profile.get("recent_metrics", {}).get(condition["metric"], []))
         valid = [
@@ -123,22 +138,41 @@ def _rule_hit(profile: dict[str, Any], rule: Rule, as_of: datetime) -> bool:
     if kind == "static_numeric_lt":
         value = profile.get("basic_info", {}).get(condition["field"])
         return isinstance(value, (int, float)) and value < float(condition["value"])
+    if kind == "static_numeric_gt":
+        value = profile.get("basic_info", {}).get(condition["field"])
+        return isinstance(value, (int, float)) and value > float(condition["value"])
     raise ValueError(f"Unsupported rule condition kind: {kind!r}")
 
 
+def _rule_hit(profile: dict[str, Any], rule: Rule, as_of: datetime) -> bool:
+    return _condition_hit(profile, rule.condition, as_of)
+
+
 def build_hits(
-    profiles: list[dict[str, Any]], rules: list[Rule], feature_end: str
+    profiles: list[dict[str, Any]],
+    rules: list[Rule],
+    feature_end: str,
+    progress: Callable[[int, int, Rule], None] | None = None,
 ) -> dict[str, dict[str, bool]]:
     as_of = _as_of(feature_end)
-    return {
-        profile["phone_id"]: {
-            rule.rule_id: _rule_hit(profile, rule, as_of)
-            for rule in rules
-            if rule.enabled
-        }
+    valid_profiles = [
+        profile
         for profile in profiles
         if clean_text(profile.get("phone_id"))
+    ]
+    enabled_rules = [rule for rule in rules if rule.enabled]
+    hits = {
+        profile["phone_id"]: {}
+        for profile in valid_profiles
     }
+    for index, rule in enumerate(enabled_rules, 1):
+        for profile in valid_profiles:
+            hits[profile["phone_id"]][rule.rule_id] = _rule_hit(
+                profile, rule, as_of
+            )
+        if progress:
+            progress(index, len(enabled_rules), rule)
+    return hits
 
 
 def _metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, float]:
@@ -198,26 +232,41 @@ def optimize_rules(
         ],
         dtype=int,
     )
-    best: (
-        tuple[tuple[float, float, float], dict[str, int], int, dict[str, float]] | None
-    ) = None
-    for candidate_weights in product(
-        *(rule.weight_candidates for rule in enabled_rules)
-    ):
-        scores = hit_matrix @ np.array(candidate_weights)
-        for threshold in config.threshold_candidates:
-            metrics = _metrics(y, (scores >= threshold).astype(int))
-            candidate = (
-                _objective(metrics, config),
-                dict(zip((rule.rule_id for rule in enabled_rules), candidate_weights)),
-                threshold,
-                metrics,
-            )
-            if best is None or candidate[0] > best[0]:
-                best = candidate
-    assert best is not None
-    weights, threshold, calibration_metrics = best[1:]
-    return SelectedRuleSet(weights, threshold, calibration_metrics)
+    weights = np.array([min(rule.weight_candidates) for rule in enabled_rules])
+    threshold = min(config.threshold_candidates)
+
+    def evaluate() -> tuple[tuple[float, float, float], dict[str, float]]:
+        metrics = _metrics(y, (hit_matrix @ weights >= threshold).astype(int))
+        return _objective(metrics, config), metrics
+
+    best_objective, best_metrics = evaluate()
+    changed = True
+    while changed:
+        changed = False
+        for index, rule in enumerate(enabled_rules):
+            best_weight = weights[index]
+            for candidate_weight in rule.weight_candidates:
+                weights[index] = candidate_weight
+                objective, metrics = evaluate()
+                if objective > best_objective:
+                    best_objective, best_metrics = objective, metrics
+                    best_weight = candidate_weight
+                    changed = True
+            weights[index] = best_weight
+        best_threshold = threshold
+        for candidate_threshold in config.threshold_candidates:
+            threshold = candidate_threshold
+            objective, metrics = evaluate()
+            if objective > best_objective:
+                best_objective, best_metrics = objective, metrics
+                best_threshold = candidate_threshold
+                changed = True
+        threshold = best_threshold
+    return SelectedRuleSet(
+        dict(zip((rule.rule_id for rule in enabled_rules), weights.tolist())),
+        threshold,
+        best_metrics,
+    )
 
 
 def evaluate_rules(
