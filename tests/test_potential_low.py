@@ -16,9 +16,11 @@ from nps_analysis.potential_low import (
 class _FakeSemanticEncoder:
     def encode(self, texts, normalize_embeddings=True):
         return [
-            [1.0, 0.0]
-            if "套餐" in text or "资费" in text or "收费" in text
-            else [0.0, 1.0]
+            (
+                [1.0, 0.0]
+                if "套餐" in text or "资费" in text or "收费" in text
+                else [0.0, 1.0]
+            )
             for text in texts
         ]
 
@@ -34,9 +36,7 @@ def test_semantic_matching_adds_auditable_medium_evidence():
             }
         ]
     )
-    matcher = SemanticMatcher(
-        "unused-in-test", 0.8, encoder=_FakeSemanticEncoder()
-    )
+    matcher = SemanticMatcher("unused-in-test", 0.8, encoder=_FakeSemanticEncoder())
 
     evidence, _ = extract_text_evidence("投诉明细", complaints, matcher)
 

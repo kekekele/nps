@@ -211,7 +211,11 @@ class SemanticMatcher:
         prototype_type_index = 0
         for type_index, prototypes in enumerate(SEMANTIC_PROTOTYPES.values()):
             if best_index < prototype_type_index + len(prototypes):
-                return self._prototype_types[type_index], self._prototype_texts[best_index], score
+                return (
+                    self._prototype_types[type_index],
+                    self._prototype_texts[best_index],
+                    score,
+                )
             prototype_type_index += len(prototypes)
         return None
 

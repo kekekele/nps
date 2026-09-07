@@ -39,6 +39,21 @@ python -m venv .venv
 
 当前实现只进行数据清洗和统计分析，不包含预测模型训练。
 
+## 用户画像潜在低分规则优化
+
+`nps_analysis.protential_low_score` 以 `user_profiles.jsonl` 和已测评用户标签为输入，不训练模型。它在标注集上自动从 YAML 中定义的离散规则权重与阈值中，按准确率、召回率或 $F_\beta$ 选择规则组合；独立评测集只计算最终指标，未测评用户只接受最终规则判断，不参与指标计算。
+
+```powershell
+.\.venv\Scripts\python.exe -m nps_analysis.protential_low_score.cli `
+  --profiles "data\user_profiles.jsonl" `
+  --labels "data\用户低分汇总.csv" `
+  --evaluation-labels "data\用户低分评测集.csv" `
+  --output "data\potential-low-score\20260907" `
+  --mode balanced
+```
+
+`--labels` 是规则优化标注集；可选的 `--evaluation-labels` 是格式相同、且不参与优化的独立评测集。默认规则和时间窗口在 `nps_analysis/protential_low_score/rules.yaml` 中维护。输出的 `potential_low_user.csv` 只包含是否潜在低分、风险类型和规则原因；`rule_optimization.json` 保存优化集指标、独立评测指标（未传入评测集时为 `null`），以及选中的内部权重和阈值。
+
 ## 潜在低分规则识别
 
 规则引擎独立运行，不会触发现有全量清洗分析流程。`--as-of` 是证据截止日，规则只读取该日期之前的行为：

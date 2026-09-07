@@ -1,0 +1,88 @@
+windows:
+  feature_end: "2026-09-01"
+  prediction_start: "2026-08-15"
+  prediction_end: "2026-08-21"
+
+optimization:
+  random_seed: 20260907
+  selection_mode: balanced
+  beta: 1.0
+  threshold_candidates: [1, 2, 3, 4, 5, 6]
+
+rules:
+  - rule_id: JOURNEY_COMPLAINT_REPEAT
+    risk_type: 投诉未解决疑似型
+    condition:
+      kind: journey_count
+      within_days: 90
+      actions: [投诉]
+      min_count: 2
+    weight_candidates: [1, 2, 3]
+    reason: 近90天重复投诉
+
+  - rule_id: JOURNEY_PRICE_DISPUTE
+    risk_type: 套餐资费不满疑似型
+    condition:
+      kind: journey_category_count
+      within_days: 90
+      actions: [咨询, 投诉]
+      field: intent
+      patterns: [费用, 资费, 优惠, 退费, 违约金]
+      min_count: 1
+    weight_candidates: [1, 2, 3]
+    reason: 近期存在费用或资费争议
+
+  - rule_id: JOURNEY_SERVICE_BLOCKED
+    risk_type: 办理变更退订受阻疑似型
+    condition:
+      kind: journey_category_count
+      within_days: 183
+      actions: [咨询, 投诉]
+      field: intent
+      patterns: [受阻, 未告知, 不知情]
+      min_count: 1
+    weight_candidates: [1, 2, 3]
+    reason: 办理、变更或退订受阻
+
+  - rule_id: JOURNEY_BROADBAND_COMPLAINT
+    risk_type: 家宽体验风险型
+    condition:
+      kind: journey_category_count
+      within_days: 183
+      actions: [投诉]
+      field: business
+      patterns: [宽带服务]
+      min_count: 1
+    weight_candidates: [1, 2, 3]
+    reason: 近期宽带投诉
+
+  - rule_id: DATA_OVERAGE_MONTHS_GE_2
+    risk_type: 流量超套风险型
+    condition:
+      kind: monthly_positive_count
+      metric: over_gprs_fee
+      recent_months: 6
+      minimum: 0
+      min_count: 2
+    weight_candidates: [1, 2, 3]
+    reason: 多月产生流量超套费用
+
+  - rule_id: DATA_OVERAGE_TOTAL_FEE_GT_20
+    risk_type: 流量超套风险型
+    condition:
+      kind: monthly_sum_gt
+      metric: over_gprs_fee
+      recent_months: 6
+      value: 20
+    weight_candidates: [1, 2, 3]
+    reason: 流量超套费用累计超过20元
+
+  - rule_id: JOURNEY_CONTACTS_GE_3_30D
+    risk_type: 高频触点负面型
+    condition:
+      kind: journey_count
+      within_days: 30
+      actions: [咨询, 投诉]
+      min_count: 3
+    weight_candidates: [1, 2]
+    reason: 近30天多次咨询或投诉

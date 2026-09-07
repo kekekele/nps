@@ -1,0 +1,376 @@
+default_business: 其他
+default_intent: 其他
+consultation_month_range: ["2026-01", "2026-09"]
+complaint_month_range: ["2026-01", "2026-09"]
+
+event_sources:
+  - source_name: 业务订购
+    sheet:
+      sheet_name: 业务订购
+      header_row: 1
+      data_start_row: 2
+      phone_column: 手机号码
+      time_column: 操作时间
+    action: 办理
+    input_fields: [订购类型, 资费名称]
+    row_filters:
+      - column: 订购类型
+        pattern: 订购
+        match_type: contains
+    default_intent: 订购
+    field_template:
+      business: 其他
+      intent: 订购
+    output_bindings:
+      - target: business
+        column: 资费名称
+        transform: business_category
+    business_key_fields: [订购类型, 资费名称]
+    dedupe_fields: [$phone_id, $moment, $action, $business]
+
+  - source_name: 业务订购
+    sheet:
+      sheet_name: 业务订购
+      header_row: 1
+      data_start_row: 2
+      phone_column: 手机号码
+      time_column: 操作时间
+    action: 退订
+    input_fields: [订购类型, 资费名称]
+    row_filters:
+      - column: 订购类型
+        pattern: 退订
+        match_type: contains
+    default_intent: 退订
+    field_template:
+      business: 其他
+      intent: 退订
+    output_bindings:
+      - target: business
+        column: 资费名称
+        transform: business_category
+    business_key_fields: [订购类型, 资费名称]
+    dedupe_fields: [$phone_id, $moment, $action, $business]
+
+  - source_name: 资费变更
+    sheet:
+      sheet_name: 资费变更
+      header_row: 1
+      data_start_row: 3
+      phone_column: 手机号码
+      time_column: 办理时间
+    action: 资费变更
+    input_fields: [宽带号码, 变更标识（0：平移；1：升档；-1：降档）]
+    default_intent: 其他
+    intent_column: 变更标识（0：平移；1：升档；-1：降档）
+    intent_rules:
+      - pattern: ^-1$
+        value: 降档
+      - pattern: ^0$
+        value: 平移
+      - pattern: ^1$
+        value: 升档
+    field_template:
+      business: 套餐资费
+      intent: 其他
+    business_key_fields: [变更标识（0：平移；1：升档；-1：降档）, 宽带号码]
+    dedupe_fields: [$phone_id, 宽带号码, $moment, 变更标识（0：平移；1：升档；-1：降档）]
+
+  - source_name: 限速与加包
+    sheet:
+      sheet_name: 限速与加包
+      header_row: 1
+      data_start_row: 3
+      phone_column: 手机号码
+      time_column: 办理时间
+    action: 办理
+    input_fields: [业务类型]
+    default_intent: 其他
+    intent_column: 业务类型
+    intent_rules:
+      - pattern: 限速
+        value: 限速
+      - pattern: 加包|加速包
+        value: 流量应急服务
+    field_template:
+      business: 其他
+      intent: 其他
+    output_bindings:
+      - target: business
+        column: 业务类型
+        transform: business_category
+    business_key_fields: [业务类型]
+
+  - source_name: 狼号
+    sheet:
+      sheet_name: 狼号
+      header_row: 1
+      data_start_row: 2
+      phone_column: 手机号码
+      time_column: 狼号接触时间
+    action: 狼号感染
+    input_fields: [通话时长]
+    default_intent: 狼号接触
+    field_template:
+      business: 通信安全
+      intent: 狼号接触
+    business_key_fields: []
+
+  - source_name: 投诉明细
+    sheet:
+      sheet_name: 投诉明细
+      header_row: 1
+      data_start_row: 2
+      phone_column: 手机号码
+      time_column: 时间
+    action: 投诉
+    input_fields: [投诉节点, 明细]
+    month_range_name: complaint_month_range
+    field_template:
+      business: 其他
+      intent: 其他
+    business_text_rule_fields: [投诉节点]
+    intent_text_rule_fields: [明细]
+    business_key_fields: []
+    dedupe_fields: [$phone_id, $moment, $action]
+
+  - source_name: 触点轨迹
+    sheet:
+      sheet_name: 触点轨迹
+      header_row: 1
+      data_start_row: 3
+      phone_column: 手机号码
+      time_column: 触点时间
+    action: 咨询
+    input_fields: [触点小类, 节点, 问题分类, 语音转文本-客户, 语音转文本-客服]
+    row_filters:
+      - column: 触点小类
+        pattern: 咨询
+        match_type: contains
+    month_range_name: consultation_month_range
+    field_template:
+      business: 其他
+      intent: 其他
+    business_text_rule_fields: [节点]
+    intent_text_rule_fields: [问题分类, 语音转文本-客户, 语音转文本-客服]
+    business_key_fields: []
+
+  - source_name: 触点轨迹
+    sheet:
+      sheet_name: 触点轨迹
+      header_row: 1
+      data_start_row: 3
+      phone_column: 手机号码
+      time_column: 触点时间
+    action: 投诉
+    input_fields: [触点小类, 节点, 投诉类型, 投诉明细]
+    row_filters:
+      - column: 触点小类
+        pattern: 投诉
+        match_type: contains
+      - column: 触点类型
+        pattern: 投诉
+        match_type: contains
+    month_range_name: complaint_month_range
+    field_template:
+      business: 其他
+      intent: 其他
+    business_text_rule_fields: [节点, 投诉类型]
+    intent_text_rule_fields: [投诉明细]
+    business_key_fields: []
+    dedupe_fields: [$phone_id, $moment, $action]
+  - source_name: 触点轨迹
+    sheet:
+      sheet_name: 触点轨迹
+      header_row: 1
+      data_start_row: 3
+      phone_column: 手机号码
+      time_column: 触点时间
+    action: 办理
+    input_fields: [触点小类, 触点类型, 问题分类, 语音转文本-客户, 语音转文本-客服]
+    row_filters:
+      - column: 触点小类
+        pattern: 办理
+        match_type: contains
+      - column: 触点类型
+        pattern: 营业厅|入网|装维
+        match_type: contains
+    month_range_name: complaint_month_range
+    field_template:
+      business: 其他
+      intent: 其他
+    business_text_rule_fields: [节点]
+    intent_text_rule_fields: [问题分类, 语音转文本-客户, 语音转文本-客服]
+    business_key_fields: []
+    dedupe_fields: [$phone_id, $moment, $action]
+
+business_rules:
+  - business: 宽带服务
+    pattern: 宽带|全光|FTTR|带宽提速|带宽小福袋|全屋Wifi|超级Wifi|全家享\d+M
+  - business: 流量服务
+    pattern: 流量|定向流量|通用流量|GPRS|\d+\s*GB|\d+\s*MB
+  - business: 语音服务
+    pattern: 语音|通话|\d+\s*分钟
+  - business: 加包服务
+    pattern: 提速包|加速包|加油包|叠加|加装|日包|月包|7天包|小时
+  - business: 升档服务
+    pattern: 升级|升档
+  - business: 降档服务
+    pattern: 降速|降档
+  - business: 限速服务
+    pattern: 限速|降速
+  - business: 套餐资费
+    pattern: 套餐|主资费|\d+(\.\d+)?档
+  - business: 短信服务
+    pattern: 短信|彩信
+  - business: 增值服务
+    pattern: 邮箱|云盘|彩铃|和留言|支付|权益|会员|咪咕|看家|手机报|福袋
+  - business: 权益增值
+    pattern: 权益|咪咕|彩铃|会员|AI豆|爱家
+
+business_text_rules:
+  - action: 投诉
+    rules:
+      - rule_id: business.broadband_service.v1
+        pattern: 宽带|全光|FTTR|带宽提速|带宽小福袋|全屋Wifi|超级Wifi|全家享\d+M|家宽|光猫|装维|LOS|拆机|高清|看家|wifi|Wi-Fi
+        value: 宽带服务
+      - rule_id: business.voice_service.v1
+        pattern: 语音|通话|\d+\s*分钟
+        value: 语音服务
+      - rule_id: business.traffic_service.v1
+        pattern: 流量|定向流量|通用流量|GPRS|\d+\s*GB|\d+\s*MB|超套|手机上网
+        value: 流量服务
+      - rule_id: business.up_service.v1
+        pattern: 升级|升档
+        value: 升档服务
+      - rule_id: business.down_service.v1
+        pattern: 降速|降档|降套
+        value: 降档服务
+      - rule_id: business.speed_limit_service.v1
+        pattern: 限速|降速
+        value: 限速服务
+      - rule_id: business.package_tariff.v1
+        pattern: 套餐|资费|\d+(\.\d+)?档|自由选|账单|费用退还|费用质疑
+        value: 套餐资费
+      - rule_id: business.marketing_contract.v1
+        pattern: 营销宣传|夸大|虚假宣传|营销解约|合约|本省业务营销
+        value: 营销合约
+      - rule_id: business.number_card_account.v1
+        pattern: 销户|入网|开户|停/复机|停机|复机
+        value: 号卡账户
+      - rule_id: business.channel.v1
+        pattern: 营业厅|社会渠道|中国移动APP|互联网渠道|在线人工
+        value: 渠道触点
+      - rule_id: business.benefits.v1
+        pattern: 权益|咪咕|彩铃|会员|AI豆|爱家
+        value: 权益增值
+      - rule_id: business.security_harassment.v1
+        pattern: 诈骗|网络安全|防骚扰
+        value: 安全骚扰
+        
+
+  - action: 咨询
+    rules:
+      - rule_id: business.consult.mobile_communication.v1
+        pattern: 手机网络|手机上网|5G网络|通话|短信|彩信|短彩信|VOLTE|来电显示|呼叫转移|补换卡|PUK|PIN|实名信息
+        value: 手机通信
+      - rule_id: business.consult.data_service.v1
+        pattern: 流量|上网|流量包|流量套餐|定向流量|流量限速|达量降速|流量提醒|共享流量|5G流量
+        value: 流量服务
+      - rule_id: business.consult.broadband.v1
+        pattern: 宽带|FTTR|副宽带|千兆带宽|光猫|路由器|全光WiFi|智慧爱家|爱家套餐|家庭宽带
+        value: 宽带服务
+      - rule_id: business.consult.tariff.v1
+        pattern: 资费套餐|基础套餐|4G套餐|5G套餐|月租|大王卡|幸福卡|校园卡|神州行|动感地带|资费降档|最低资费
+        value: 资费套餐
+      - rule_id: business.consult.tv.v1
+        pattern: 高清电视|互联网电视|机顶盒|第二部电视|电视点播|魔百和|酷喵|奇异果TV|腾讯专区|电视增值包
+        value: 电视
+      - rule_id: business.consult.digital_value_added.v1
+        pattern: 咪咕|彩铃|和包|云盘|会员|权益|和生活|和沟通|和娱乐|梦网|来电提醒|和教育
+        value: 数字/增值业务
+      - rule_id: business.consult.number_card_account.v1
+        pattern: 携号转网|携号转入|省内携号|销号|销户|号码状态|本机号码|过户|挂失|吉祥号码|一证通查
+        value: 号码/基础业务
+      - rule_id: business.consult.account_fee.v1
+        pattern: 话费|账单|消费|扣费|充值|欠费|费用|资费|发票|积分|违约金|滞纳金
+        value: 账户/费用
+
+  - action: 办理
+    rules:
+      - rule_id: business.handling.broadband.v1
+        pattern: 宽带|FTTR|副宽带|千兆带宽|光猫|路由器|全光WiFi|智慧爱家|宽带开户|宽带新装|宽带移机|企业宽带|看家宝
+        value: 宽带服务
+      - rule_id: business.handling.tv_value_added.v1
+        pattern: 互联网电视|高清电视|机顶盒|第二部电视|电视增值包|酷喵|奇异果TV|腾讯会员|咪咕|彩铃|视频彩铃|和包|移动云盘|会员|权益|和生活|和娱乐|和沟通|来电提醒
+        value: 电视/增值业务
+      - rule_id: business.handling.data_service.v1
+        pattern: 流量包|流量套餐|流量业务|流量卡|定向流量|区域流量|共享流量|上网业务|手机上网|5G极速流量|5G优享|达量降速|限速
+        value: 流量/上网
+      - rule_id: business.handling.tariff.v1
+        pattern: 资费套餐|基础套餐|4G套餐|5G套餐|月租|大流量资费套餐|不限量套餐|动感地带|神州行|幸福卡|校园卡|创业卡|移动花卡|最低资费
+        value: 资费套餐
+      - rule_id: business.handling.mobile_communication.v1
+        pattern: 入网|号卡开户|开户|携号转网|携号转入|号卡携入|补换卡|换卡|副卡|过户|停机|复机|开机|挂失|解挂|实名信息|呼叫转移|来电显示|VOLTE|短信|彩信|语音
+        value: 手机通信
+
+intent_text_rules:
+  - action: 投诉
+    rules:
+      - rule_id: complaint.network.v1
+        pattern: 网络质量|无法上网|无法连接|卡顿|LOS|报修|掉电|单障|无信号|家宽报修|无线网络|断网|网速慢|上不了网|无法使用宽带|宽带无法使用
+        value: 网络质量问题|上不了网
+      - rule_id: complaint.fee_dispute.v1
+        pattern: 费用质疑|扣费|超套|退费|小额退费|费用退还|账单|优惠对不上|要求退费|申请退费|要求退还
+        value: 费用争议|退费
+      - rule_id: complaint.std_service.v1
+        pattern: 办理规范|未按客户|阻挠|拖延|夸大|虚假宣传|未告知|营销宣传|未告知|没有告知|不知情开通|不知情办理
+        value: 服务规范|不知情或者未告知
+      - rule_id: complaint.rule_contract.v1
+        pattern: 业务规则|解约条件|违约|合约|降档解约|提前退订|提前解约|违约金
+        value: 规则合约|因违约金
+      - rule_id: complaint.business_processing.v1
+        pattern: 订购/开通|套餐变更|退订/取消|销户|拆机|成员添加|成员删除|无法办理|业务办理|无法办理|不知情开通业务|强制|没有告知
+        value: 业务办理|办理受阻
+      - rule_id: complaint.price_dispute.v1
+        pattern: 套餐贵|收费不合理|优惠到期|隐藏
+        value: 资费争议
+      - rule_id: business.query.v1
+        pattern: 咨询|查询|信息确认
+        value: 咨询查询
+      - rule_id: business.product_usage.v1
+        pattern: 产品使用|未到账|核销|充值交费异常
+        value: 产品使用
+
+  - action: 咨询
+    rules:
+      - rule_id: consult.business_handling.v1
+        pattern: 办理|开通|变更|退订|取消|销户|注销|携号转网|携转|降档|移机|搬家|搬迁
+        value: 业务办理/变更/退订
+      - rule_id: consult.fee_consult.v1
+        pattern: 费用|收费|扣费|资费|账单|话费|流量|积分|优惠|点播|不知情开通
+        value: 费用/资费/优惠
+      - rule_id: consult.network_communication_issue.v1
+        pattern: 手机.*(上网|网络|网速|限速|信号)|宽带.*(故障|网速|信号|断网|掉线|连不上)|电视.*故障|看家宝.*故障|短彩信.*故障|通话.*(质量|故障)
+        value: 网络/通信故障
+      - rule_id: consult.service_experience.v1
+        pattern: 服务态度|态度差|投诉|解决不彻底|骚扰|主动提醒|上门慢|维修.*慢|安装.*慢|未.*联系|没.*接到.*电话
+        value: 服务体验/投诉
+
+  - action: 办理
+    rules:
+      - rule_id: handling.network_communication_equipment.v1
+        pattern: 宽带.*(网速慢|速度慢|故障|坏了|无法使用|用不了|连不上|连接不上|信号弱)|宽带(网速慢|故障|坏了|连不上)|手机.*(上网慢|网速慢|无信号|信号弱)|手机(上网慢|网速慢|无信号|信号弱)|通话.*(质量差|不清晰|杂音|断断续续)|通话质量差|短彩信.*故障|短信.*(收不到|发不出|失败)|彩信.*(收不到|发不出|失败)|电视.*故障|电视.*坏了|看家宝.*故障|看家宝.*坏了
+        value: 网络/通信/设备故障
+      - rule_id: handling.fee_dispute.v1
+        pattern: 优惠到期|优惠.*到期|费用质疑|费用.*不对|扣费.*不对|乱扣费|多扣费|重复扣费|额外收费|产生.*电视点播费用|电视点播.*费用|话费查询|查询话费|查询流量|查询积分|话费.*流量.*积分|咨询降档|套餐降档|降档咨询|手机限速|流量限速|被限速
+        value: 费用/资费问题
+      - rule_id: handling.data_service.v1
+        pattern: 限制.*退订|拖延.*退订|退订.*限制|退订.*拖延|取消业务咨询|咨询.*取消业务|办理业务咨询|咨询.*办理业务|业务办理.*流程|业务变更.*流程|业务退订.*流程|办理.*复杂|变更.*复杂|退订.*复杂|流程.*复杂|流程.*不方便|销户|注销号码|注销业务|取消业务.*营业厅|退订.*营业厅|移机咨询|咨询.*移机|号码关停|号码停用|携号转网|携号转网咨询|搬家|搬迁|搬家.*销户|搬家.*移机|搬家.*办理业务
+        value: 业务办理/变更/退订
+      - rule_id: handling.service_quality.v1
+        pattern: 服务态度差|态度差|服务不好|服务差|客服态度|工作人员态度|频繁.*短信|频繁.*电话|短信.*骚扰|电话.*骚扰|电话骚扰|未主动提醒|没有主动提醒|未提醒|没有提醒|未在预期时间.*电话|未接到.*工作人员.*电话|没有接到.*工作人员.*电话|工作人员.*没有联系|上门慢|上门.*慢|上门不及时|安装.*上门慢|修复.*上门慢|维修.*上门慢|装维.*慢|投诉.*解决.*不彻底|问题.*解决.*不彻底|投诉.*没有解决|投诉.*未解决
+        value: 服务质量问题
+      - rule_id: handling.business_cognition_other.v1
+        pattern: 业务认知|其他
+        value: 不知情.*开通|不知情.*办理|不知情.*订购|不知情.*开.*业务|莫名其妙.*开通|莫名.*开通|未经本人同意.*开通|未办理.*业务|没有办理.*业务|不知道.*为什么.*开通|其他问题
