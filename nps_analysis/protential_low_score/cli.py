@@ -31,6 +31,73 @@ def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
         writer.writerows(rows)
 
 
+def _write_rows(
+    path: Path, rows: list[dict[str, object]], columns: list[str]
+) -> None:
+    with path.open("w", encoding="utf-8-sig", newline="") as output:
+        writer = csv.DictWriter(output, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _labeled_prediction_details(
+    predictions: list[dict[str, object]], labels: dict[str, int]
+) -> list[dict[str, object]]:
+    details = []
+    for prediction in predictions:
+        phone_id = str(prediction["phone_id"])
+        if phone_id not in labels:
+            continue
+        actual = labels[phone_id]
+        predicted = int(prediction["is_potential_low"])
+        outcome = (
+            "TP" if actual and predicted else "FP" if predicted else "FN" if actual else "TN"
+        )
+        details.append(
+            {
+                **prediction,
+                "is_low_score": actual,
+                "prediction_outcome": outcome,
+            }
+        )
+    return details
+
+
+def _rule_hit_details(
+    hits: dict[str, dict[str, bool]],
+    predictions: list[dict[str, object]],
+    rules: list[object],
+    selected: object,
+    labels: dict[str, int],
+    evaluation_labels: dict[str, int] | None,
+) -> list[dict[str, object]]:
+    prediction_by_id = {str(row["phone_id"]): row for row in predictions}
+    rows = []
+    for rule in rules:
+        rule_id = getattr(rule, "rule_id")
+        for phone_id, user_hits in hits.items():
+            if not user_hits.get(rule_id, False):
+                continue
+            rows.append(
+                {
+                    "phone_id": phone_id,
+                    "rule_id": rule_id,
+                    "risk_type": getattr(rule, "risk_type"),
+                    "rule_reason": getattr(rule, "reason"),
+                    "selected_weight": getattr(selected, "weights").get(rule_id, 0),
+                    "contributes_to_decision": int(
+                        getattr(selected, "weights").get(rule_id, 0) > 0
+                    ),
+                    "is_potential_low": prediction_by_id[phone_id]["is_potential_low"],
+                    "calibration_is_low_score": labels.get(phone_id, ""),
+                    "evaluation_is_low_score": (
+                        evaluation_labels.get(phone_id, "") if evaluation_labels else ""
+                    ),
+                }
+            )
+    return rows
+
+
 def _show_rule_progress(index: int, total: int, rule: object) -> None:
     rule_id = getattr(rule, "rule_id")
     print(f"\r      [{index:>2}/{total}] {rule_id}", end="", flush=True)
@@ -96,6 +163,7 @@ def main() -> None:
     )
     evaluation_metrics = None
     evaluation_rule_impacts = []
+    evaluation_labels = None
     if args.evaluation_labels:
         print("      Calculating independent evaluation metrics...")
         evaluation_labels = load_labels(args.evaluation_labels)
@@ -112,6 +180,55 @@ def main() -> None:
     print("[6/6] Writing output files...")
     args.output.mkdir(parents=True, exist_ok=True)
     _write_csv(args.output / "potential_low_user.csv", predictions)
+    calibration_details = _labeled_prediction_details(predictions, labels)
+    detail_columns = [
+        "phone_id",
+        "is_potential_low",
+        "primary_type",
+        "risk_reasons",
+        "hit_rule_count",
+        "is_low_score",
+        "prediction_outcome",
+    ]
+    _write_rows(
+        args.output / "calibration_prediction_detail.csv",
+        calibration_details,
+        detail_columns,
+    )
+    _write_rows(
+        args.output / "calibration_recalled_low_users.csv",
+        [row for row in calibration_details if row["prediction_outcome"] == "TP"],
+        detail_columns,
+    )
+    if evaluation_labels is not None:
+        evaluation_details = _labeled_prediction_details(predictions, evaluation_labels)
+        _write_rows(
+            args.output / "evaluation_prediction_detail.csv",
+            evaluation_details,
+            detail_columns,
+        )
+        _write_rows(
+            args.output / "evaluation_recalled_low_users.csv",
+            [row for row in evaluation_details if row["prediction_outcome"] == "TP"],
+            detail_columns,
+        )
+    _write_rows(
+        args.output / "user_rule_hit_detail.csv",
+        _rule_hit_details(
+            hits, predictions, rules, selected, labels, evaluation_labels
+        ),
+        [
+            "phone_id",
+            "rule_id",
+            "risk_type",
+            "rule_reason",
+            "selected_weight",
+            "contributes_to_decision",
+            "is_potential_low",
+            "calibration_is_low_score",
+            "evaluation_is_low_score",
+        ],
+    )
     (args.output / "rule_optimization.json").write_text(
         json.dumps(
             {

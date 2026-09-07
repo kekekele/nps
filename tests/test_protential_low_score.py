@@ -247,6 +247,17 @@ def test_cli_writes_predictions_and_optimization_report(tmp_path, monkeypatch):
 
     assert (output_path / "potential_low_user.csv").exists()
     assert (output_path / "rule_optimization.json").exists()
+    assert (output_path / "calibration_recalled_low_users.csv").exists()
+    assert (output_path / "evaluation_recalled_low_users.csv").exists()
+    assert (output_path / "calibration_prediction_detail.csv").exists()
+    assert (output_path / "evaluation_prediction_detail.csv").exists()
+    assert (output_path / "user_rule_hit_detail.csv").exists()
+    with (output_path / "evaluation_recalled_low_users.csv").open(
+        encoding="utf-8-sig", newline=""
+    ) as output:
+        recalled = list(csv.DictReader(output))
+    assert recalled[0]["phone_id"] == "low-0"
+    assert recalled[0]["prediction_outcome"] == "TP"
     report = json.loads(
         (output_path / "rule_optimization.json").read_text(encoding="utf-8")
     )
