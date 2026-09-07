@@ -10,6 +10,7 @@ from nps_analysis.protential_low_score.engine import (
     evaluate_rules,
     optimize_rules,
     predict,
+    rule_impacts,
 )
 
 
@@ -66,6 +67,9 @@ def test_rule_optimization_predicts_without_exposing_scores():
     assert results["low-0"]["is_potential_low"] == 1
     assert results["unmeasured"]["is_potential_low"] == 1
     assert "risk_score" not in results["low-0"]
+    impact = rule_impacts(hits, labels, [rule], selected)[0]
+    assert impact["rule_id"] == "COMPLAINT_REPEAT"
+    assert impact["alone_precision"] == 1.0
 
 
 def test_configurable_composite_and_sequence_conditions():
@@ -78,7 +82,9 @@ def test_configurable_composite_and_sequence_conditions():
             ],
             overage=[0, 25],
         ),
-        _profile("u2", [{"event_time": "2026-08-01", "action": "投诉"}], overage=[0, 25]),
+        _profile(
+            "u2", [{"event_time": "2026-08-01", "action": "投诉"}], overage=[0, 25]
+        ),
     ]
     rules = [
         Rule(
@@ -102,13 +108,23 @@ def test_configurable_composite_and_sequence_conditions():
                     {
                         "kind": "any_of",
                         "conditions": [
-                            {"kind": "monthly_sum_gt", "metric": "over_gprs_fee", "recent_months": 2, "value": 20}
+                            {
+                                "kind": "monthly_sum_gt",
+                                "metric": "over_gprs_fee",
+                                "recent_months": 2,
+                                "value": 20,
+                            }
                         ],
                     },
                     {
                         "kind": "none_of",
                         "conditions": [
-                            {"kind": "journey_count", "within_days": 30, "actions": ["投诉"], "min_count": 1}
+                            {
+                                "kind": "journey_count",
+                                "within_days": 30,
+                                "actions": ["投诉"],
+                                "min_count": 1,
+                            }
                         ],
                     },
                 ],
@@ -120,18 +136,54 @@ def test_configurable_composite_and_sequence_conditions():
 
     hits = build_hits(profiles, rules, "2026-08-14")
 
-    assert hits["u1"] == {"consult_then_cancel": True, "overage_without_complaint": True}
-    assert hits["u2"] == {"consult_then_cancel": False, "overage_without_complaint": False}
+    assert hits["u1"] == {
+        "consult_then_cancel": True,
+        "overage_without_complaint": True,
+    }
+    assert hits["u2"] == {
+        "consult_then_cancel": False,
+        "overage_without_complaint": False,
+    }
 
 
 def test_build_hits_reports_progress_per_enabled_rule():
     rules = [
-        Rule("enabled", "测试", {"kind": "journey_count", "within_days": 1, "actions": ["投诉"], "min_count": 1}, (1,), "启用"),
-        Rule("disabled", "测试", {"kind": "journey_count", "within_days": 1, "actions": ["投诉"], "min_count": 1}, (1,), "禁用", enabled=False),
+        Rule(
+            "enabled",
+            "测试",
+            {
+                "kind": "journey_count",
+                "within_days": 1,
+                "actions": ["投诉"],
+                "min_count": 1,
+            },
+            (1,),
+            "启用",
+        ),
+        Rule(
+            "disabled",
+            "测试",
+            {
+                "kind": "journey_count",
+                "within_days": 1,
+                "actions": ["投诉"],
+                "min_count": 1,
+            },
+            (1,),
+            "禁用",
+            enabled=False,
+        ),
     ]
     progress = []
 
-    build_hits([_profile("u1")], rules, "2026-08-14", progress=lambda index, total, rule: progress.append((index, total, rule.rule_id)))
+    build_hits(
+        [_profile("u1")],
+        rules,
+        "2026-08-14",
+        progress=lambda index, total, rule: progress.append(
+            (index, total, rule.rule_id)
+        ),
+    )
 
     assert progress == [(1, 1, "enabled")]
 
@@ -200,3 +252,4 @@ def test_cli_writes_predictions_and_optimization_report(tmp_path, monkeypatch):
     )
     assert report["evaluation_metrics"]["tp"] == 1
     assert report["evaluation_metrics"]["tn"] == 1
+    assert report["calibration_rule_impacts"][0]["rule_id"] == "complaint"

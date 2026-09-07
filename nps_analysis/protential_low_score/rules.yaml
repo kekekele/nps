@@ -2,13 +2,14 @@ windows:
   feature_end: "2026-09-01"
 
 optimization:
-  selection_mode: balanced
+  selection_mode: recall
   beta: 1.0
   threshold_candidates: [1, 2, 3, 4, 5, 6]
 
 rules:
   - rule_id: JOURNEY_COMPLAINT_RECENT
     risk_type: 投诉未解决疑似型
+    enabled: true
     condition:
       kind: journey_count
       within_days: 183
@@ -19,6 +20,7 @@ rules:
 
   - rule_id: JOURNEY_COMPLAINT_REPEAT
     risk_type: 投诉未解决疑似型
+    enabled: true
     condition:
       kind: journey_count
       within_days: 90
@@ -29,6 +31,7 @@ rules:
 
   - rule_id: JOURNEY_COMPLAINT_UNRESOLVED
     risk_type: 投诉未解决疑似型
+    enabled: true
     condition:
       kind: journey_category_count
       within_days: 183
@@ -41,6 +44,7 @@ rules:
 
   - rule_id: COMPLAINT_FALLBACK
     risk_type: 投诉未解决疑似型
+    enabled: true
     condition:
       kind: all_of
       conditions:
@@ -64,6 +68,7 @@ rules:
 
   - rule_id: HOME_BROADBAND_LOW_BANDWIDTH
     risk_type: 家宽体验风险型
+    enabled: true
     condition:
       kind: all_of
       conditions:
@@ -89,6 +94,7 @@ rules:
 
   - rule_id: JOURNEY_PRICE_DISPUTE
     risk_type: 套餐资费不满疑似型
+    enabled: true
     condition:
       kind: journey_category_count
       within_days: 90
@@ -101,6 +107,7 @@ rules:
 
   - rule_id: JOURNEY_SERVICE_BLOCKED
     risk_type: 办理变更退订受阻疑似型
+    enabled: true
     condition:
       kind: journey_category_count
       within_days: 183
@@ -113,6 +120,7 @@ rules:
 
   - rule_id: JOURNEY_BROADBAND_COMPLAINT
     risk_type: 家宽体验风险型
+    enabled: true
     condition:
       kind: journey_category_count
       within_days: 183
@@ -125,6 +133,7 @@ rules:
 
   - rule_id: JOURNEY_BROADBAND_PROBLEM
     risk_type: 家宽体验风险型
+    enabled: true
     condition:
       kind: journey_category_count
       within_days: 90
@@ -137,6 +146,7 @@ rules:
 
   - rule_id: DATA_OVERAGE_MONTHS_GE_2
     risk_type: 流量超套风险型
+    enabled: true
     condition:
       kind: monthly_positive_count
       metric: over_gprs_fee
@@ -148,6 +158,7 @@ rules:
 
   - rule_id: DATA_OVERAGE_TOTAL_FEE_GT_20
     risk_type: 流量超套风险型
+    enabled: true
     condition:
       kind: monthly_sum_gt
       metric: over_gprs_fee
@@ -158,6 +169,7 @@ rules:
 
   - rule_id: JOURNEY_DATA_DISSATISFACTION
     risk_type: 流量超套风险型
+    enabled: true
     condition:
       kind: journey_category_count
       within_days: 90
@@ -170,6 +182,7 @@ rules:
 
   - rule_id: JOURNEY_TARIFF_COMPLAINT
     risk_type: 套餐资费不满疑似型
+    enabled: true
     condition:
       kind: journey_category_count
       within_days: 183
@@ -182,6 +195,7 @@ rules:
 
   - rule_id: JOURNEY_PLAN_DOWNGRADE
     risk_type: 套餐资费不满疑似型
+    enabled: true
     condition:
       kind: journey_category_count
       within_days: 183
@@ -194,6 +208,7 @@ rules:
 
   - rule_id: JOURNEY_CANCEL_RECENT
     risk_type: 套餐资费不满疑似型
+    enabled: true
     condition:
       kind: journey_count
       within_days: 90
@@ -204,6 +219,7 @@ rules:
 
   - rule_id: JOURNEY_PLAN_CHANGE_REPEAT
     risk_type: 套餐资费不满疑似型
+    enabled: true
     condition:
       kind: journey_count
       within_days: 90
@@ -214,6 +230,7 @@ rules:
 
   - rule_id: JOURNEY_CONTACTS_GE_3_30D
     risk_type: 高频触点负面型
+    enabled: true
     condition:
       kind: journey_count
       within_days: 30
@@ -224,6 +241,7 @@ rules:
 
   - rule_id: JOURNEY_OPERATION_REPEAT
     risk_type: 办理变更退订受阻疑似型
+    enabled: true
     condition:
       kind: journey_count
       within_days: 30
@@ -234,6 +252,7 @@ rules:
 
   - rule_id: JOURNEY_CANCEL_AFTER_CONSULT
     risk_type: 办理变更退订受阻疑似型
+    enabled: true
     condition:
       kind: journey_sequence
       within_days: 30
@@ -246,6 +265,7 @@ rules:
 
   - rule_id: JOURNEY_MARKETING_COMPLAINT
     risk_type: 营销宣传争议型
+    enabled: true
     condition:
       kind: journey_category_count
       within_days: 183
@@ -258,6 +278,7 @@ rules:
 
   - rule_id: JOURNEY_UNINFORMED_HANDLING
     risk_type: 营销宣传争议型
+    enabled: true
     condition:
       kind: journey_category_count
       within_days: 183
@@ -270,6 +291,7 @@ rules:
 
   - rule_id: REMINDER_WITH_OVERAGE
     risk_type: 提醒告知不足疑似型
+    enabled: true
     condition:
       kind: all_of
       conditions:
@@ -295,6 +317,7 @@ rules:
 
   - rule_id: JOURNEY_CONTACTS_GE_5_90D
     risk_type: 高频触点负面型
+    enabled: true
     condition:
       kind: journey_count
       within_days: 90
@@ -305,6 +328,7 @@ rules:
 
   - rule_id: JOURNEY_NEGATIVE_CONTACT_REPEAT
     risk_type: 高频触点负面型
+    enabled: true
     condition:
       kind: all_of
       conditions:

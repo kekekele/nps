@@ -88,20 +88,32 @@ def _event_matches(event: dict[str, Any], condition: dict[str, Any]) -> bool:
     return not field or not patterns or _matches_text(event.get(field), patterns)
 
 
-def _condition_hit(profile: dict[str, Any], condition: dict[str, Any], as_of: datetime) -> bool:
+def _condition_hit(
+    profile: dict[str, Any], condition: dict[str, Any], as_of: datetime
+) -> bool:
     kind = condition["kind"]
     if kind == "all_of":
-        return all(_condition_hit(profile, item, as_of) for item in condition["conditions"])
+        return all(
+            _condition_hit(profile, item, as_of) for item in condition["conditions"]
+        )
     if kind == "any_of":
-        return any(_condition_hit(profile, item, as_of) for item in condition["conditions"])
+        return any(
+            _condition_hit(profile, item, as_of) for item in condition["conditions"]
+        )
     if kind == "none_of":
-        return not any(_condition_hit(profile, item, as_of) for item in condition["conditions"])
+        return not any(
+            _condition_hit(profile, item, as_of) for item in condition["conditions"]
+        )
     if kind == "journey_count":
         events = _events(profile, as_of, int(condition["within_days"]))
-        return sum(_event_matches(event, condition) for event in events) >= int(condition["min_count"])
+        return sum(_event_matches(event, condition) for event in events) >= int(
+            condition["min_count"]
+        )
     if kind == "journey_category_count":
         events = _events(profile, as_of, int(condition["within_days"]))
-        return sum(_event_matches(event, condition) for event in events) >= int(condition["min_count"])
+        return sum(_event_matches(event, condition) for event in events) >= int(
+            condition["min_count"]
+        )
     if kind == "journey_sequence":
         events = sorted(
             _events(profile, as_of, int(condition["within_days"])),
@@ -156,20 +168,13 @@ def build_hits(
 ) -> dict[str, dict[str, bool]]:
     as_of = _as_of(feature_end)
     valid_profiles = [
-        profile
-        for profile in profiles
-        if clean_text(profile.get("phone_id"))
+        profile for profile in profiles if clean_text(profile.get("phone_id"))
     ]
     enabled_rules = [rule for rule in rules if rule.enabled]
-    hits = {
-        profile["phone_id"]: {}
-        for profile in valid_profiles
-    }
+    hits = {profile["phone_id"]: {} for profile in valid_profiles}
     for index, rule in enumerate(enabled_rules, 1):
         for profile in valid_profiles:
-            hits[profile["phone_id"]][rule.rule_id] = _rule_hit(
-                profile, rule, as_of
-            )
+            hits[profile["phone_id"]][rule.rule_id] = _rule_hit(profile, rule, as_of)
         if progress:
             progress(index, len(enabled_rules), rule)
     return hits
@@ -290,6 +295,53 @@ def evaluate_rules(
         ]
     )
     return _metrics(actual, (scores >= selected.threshold).astype(int))
+
+
+def rule_impacts(
+    hits: dict[str, dict[str, bool]],
+    labels: dict[str, int],
+    rules: list[Rule],
+    selected: SelectedRuleSet,
+) -> list[dict[str, Any]]:
+    ids = sorted(set(hits) & set(labels))
+    if not ids:
+        return []
+    actual = np.array([labels[phone_id] for phone_id in ids])
+    enabled_rules = [rule for rule in rules if rule.enabled]
+    selected_scores = np.array(
+        [
+            sum(
+                selected.weights.get(rule.rule_id, 0)
+                for rule in enabled_rules
+                if hits[phone_id].get(rule.rule_id, False)
+            )
+            for phone_id in ids
+        ]
+    )
+    baseline = _metrics(actual, (selected_scores >= selected.threshold).astype(int))
+    impacts = []
+    for rule in enabled_rules:
+        matches = np.array([hits[phone_id].get(rule.rule_id, False) for phone_id in ids])
+        alone = _metrics(actual, matches.astype(int))
+        without = _metrics(
+            actual,
+            (selected_scores - matches * selected.weights.get(rule.rule_id, 0) >= selected.threshold).astype(int),
+        )
+        impacts.append(
+            {
+                "rule_id": rule.rule_id,
+                "risk_type": rule.risk_type,
+                "enabled": True,
+                "selected_weight": selected.weights.get(rule.rule_id, 0),
+                "hit_count": int(matches.sum()),
+                "alone_precision": alone["precision"],
+                "alone_recall": alone["recall"],
+                "without_precision_delta": baseline["precision"] - without["precision"],
+                "without_recall_delta": baseline["recall"] - without["recall"],
+                "without_f1_delta": baseline["f1"] - without["f1"],
+            }
+        )
+    return impacts
 
 
 def predict(

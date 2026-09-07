@@ -13,6 +13,7 @@ from .engine import (
     load_profiles,
     optimize_rules,
     predict,
+    rule_impacts,
 )
 
 
@@ -80,6 +81,7 @@ def main() -> None:
 
     print("[4/6] Optimizing rule weights and decision threshold...")
     selected = optimize_rules(hits, labels, rules, optimization)
+    calibration_rule_impacts = rule_impacts(hits, labels, rules, selected)
     print(
         f"      threshold={selected.threshold}, "
         f"calibration_precision={selected.calibration_metrics['precision']:.3f}, "
@@ -93,10 +95,14 @@ def main() -> None:
         f"      predicted_low={predicted_count}, total_predictions={len(predictions)}"
     )
     evaluation_metrics = None
+    evaluation_rule_impacts = []
     if args.evaluation_labels:
         print("      Calculating independent evaluation metrics...")
         evaluation_labels = load_labels(args.evaluation_labels)
         evaluation_metrics = evaluate_rules(hits, evaluation_labels, rules, selected)
+        evaluation_rule_impacts = rule_impacts(
+            hits, evaluation_labels, rules, selected
+        )
         print(
             f"      evaluation_users={evaluation_metrics['tp'] + evaluation_metrics['fp'] + evaluation_metrics['fn'] + evaluation_metrics['tn']}, "
             f"precision={evaluation_metrics['precision']:.3f}, "
@@ -113,6 +119,8 @@ def main() -> None:
                 "threshold": selected.threshold,
                 "calibration_metrics": selected.calibration_metrics,
                 "evaluation_metrics": evaluation_metrics,
+                "calibration_rule_impacts": calibration_rule_impacts,
+                "evaluation_rule_impacts": evaluation_rule_impacts,
             },
             ensure_ascii=False,
             indent=2,
