@@ -55,13 +55,14 @@ def test_build_journeys_maps_events_and_uses_touchpoint_rules(tmp_path):
     _sheet(
         workbook,
         config.complaint,
-        ["手机号码", "时间", "投诉节点", "明细"],
+        ["手机号码", "时间", "投诉节点", "明细", "投诉处理满意度"],
         [
             [
                 phone,
                 20260705,
                 "服务->移动业务->资费套餐->套餐变更",
                 "客户咨询资费并要求退费",
+                "6.5",
             ]
         ],
     )
@@ -147,6 +148,7 @@ def test_build_journeys_maps_events_and_uses_touchpoint_rules(tmp_path):
     assert consultation["raw_text"] == ""
     assert complaint["business"] == "套餐资费"
     assert complaint["intent"] == "费用争议|退费"
+    assert complaint["complaint_handling_satisfaction"] == 6.5
     assert set(journey[0]) == {
         "event_id",
         "event_time",
@@ -155,4 +157,5 @@ def test_build_journeys_maps_events_and_uses_touchpoint_rules(tmp_path):
         "intent",
         "source",
         "raw_text",
+        "complaint_handling_satisfaction",
     }

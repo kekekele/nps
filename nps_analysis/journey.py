@@ -92,6 +92,7 @@ def _event(
         "intent": intent,
         "source": "",
         "raw_text": "",
+        "complaint_handling_satisfaction": None,
     }
 
 
@@ -133,13 +134,27 @@ def _passes_filters(field_values: dict[str, Any], source: EventSourceConfig) -> 
     return True
 
 
-def _assign_output_field(event: dict[str, Any], target: str, value: str) -> None:
-    if not value:
+def _binding_value(value: Any, transform: str) -> Any:
+    if transform != "numeric":
+        return clean_text(value) or ""
+    text = clean_text(value)
+    if not text or text == r"\N":
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _assign_output_field(event: dict[str, Any], target: str, value: Any) -> None:
+    if value in (None, ""):
         return
     if target == "business":
         event["business"] = value
     elif target == "intent":
         event["intent"] = value
+    else:
+        event[target] = value
 
 
 def _resolve_business(
@@ -158,7 +173,7 @@ def _resolve_business(
                 config.default_business,
             )
         else:
-            value = clean_text(raw_value) or ""
+            value = _binding_value(raw_value, binding.transform)
         _assign_output_field(event, binding.target, value)
     return event["business"]
 
@@ -294,6 +309,15 @@ def _extract_source_events(
             row_no,
             str(row_no),
         )
+        for binding in source.output_bindings:
+            if binding.target not in {"business", "intent"}:
+                _assign_output_field(
+                    event,
+                    binding.target,
+                    _binding_value(
+                        field_values.get(binding.column), binding.transform
+                    ),
+                )
         event["event_id"] = _event_id(
             [
                 source.source_name,

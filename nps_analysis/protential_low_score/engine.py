@@ -114,6 +114,15 @@ def _condition_hit(
         return sum(_event_matches(event, condition) for event in events) >= int(
             condition["min_count"]
         )
+    if kind == "journey_numeric_lt":
+        events = _events(profile, as_of, int(condition["within_days"]))
+        field = condition["field"]
+        return sum(
+            isinstance(event.get(field), (int, float))
+            and event[field] < float(condition["value"])
+            and _event_matches(event, condition)
+            for event in events
+        ) >= int(condition.get("min_count", 1))
     if kind == "journey_sequence":
         events = sorted(
             _events(profile, as_of, int(condition["within_days"])),
@@ -321,11 +330,16 @@ def rule_impacts(
     baseline = _metrics(actual, (selected_scores >= selected.threshold).astype(int))
     impacts = []
     for rule in enabled_rules:
-        matches = np.array([hits[phone_id].get(rule.rule_id, False) for phone_id in ids])
+        matches = np.array(
+            [hits[phone_id].get(rule.rule_id, False) for phone_id in ids]
+        )
         alone = _metrics(actual, matches.astype(int))
         without = _metrics(
             actual,
-            (selected_scores - matches * selected.weights.get(rule.rule_id, 0) >= selected.threshold).astype(int),
+            (
+                selected_scores - matches * selected.weights.get(rule.rule_id, 0)
+                >= selected.threshold
+            ).astype(int),
         )
         impacts.append(
             {

@@ -146,6 +146,49 @@ def test_configurable_composite_and_sequence_conditions():
     }
 
 
+def test_low_complaint_handling_satisfaction_rule():
+    profiles = [
+        _profile(
+            "low-satisfaction",
+            [
+                {
+                    "event_time": "2026-08-10",
+                    "action": "投诉",
+                    "complaint_handling_satisfaction": 6.5,
+                }
+            ],
+        ),
+        _profile(
+            "satisfied",
+            [
+                {
+                    "event_time": "2026-08-10",
+                    "action": "投诉",
+                    "complaint_handling_satisfaction": 7,
+                }
+            ],
+        ),
+    ]
+    rule = Rule(
+        "low_complaint_satisfaction",
+        "投诉处理不满疑似型",
+        {
+            "kind": "journey_numeric_lt",
+            "within_days": 30,
+            "actions": ["投诉"],
+            "field": "complaint_handling_satisfaction",
+            "value": 7,
+        },
+        (1,),
+        "投诉处理满意度低于7分",
+    )
+
+    hits = build_hits(profiles, [rule], "2026-08-14")
+
+    assert hits["low-satisfaction"][rule.rule_id] is True
+    assert hits["satisfied"][rule.rule_id] is False
+
+
 def test_build_hits_reports_progress_per_enabled_rule():
     rules = [
         Rule(

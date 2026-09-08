@@ -7,6 +7,18 @@ optimization:
   threshold_candidates: [1, 2, 3, 4, 5, 6]
 
 rules:
+  - rule_id: COMPLAINT_HANDLING_LOW_SATISFACTION
+    risk_type: 投诉处理不满疑似型
+    enabled: true
+    condition:
+      kind: journey_numeric_lt
+      within_days: 183
+      actions: [投诉]
+      field: complaint_handling_satisfaction
+      value: 7
+    weight_candidates: [1, 2, 3]
+    reason: 投诉处理满意度低于7分
+
   - rule_id: JOURNEY_COMPLAINT_RECENT
     risk_type: 投诉未解决疑似型
     enabled: true

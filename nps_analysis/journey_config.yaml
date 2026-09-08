@@ -124,11 +124,15 @@ event_sources:
       phone_column: 手机号码
       time_column: 时间
     action: 投诉
-    input_fields: [投诉节点, 明细]
+    input_fields: [投诉节点, 明细, 投诉处理满意度]
     month_range_name: complaint_month_range
     field_template:
       business: 其他
       intent: 其他
+    output_bindings:
+      - target: complaint_handling_satisfaction
+        column: 投诉处理满意度
+        transform: numeric
     business_text_rule_fields: [投诉节点]
     intent_text_rule_fields: [明细]
     business_key_fields: []
