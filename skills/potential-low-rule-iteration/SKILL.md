@@ -149,6 +149,49 @@ $$
 
 只使用画像中已结构化的字段。不得直接由 `raw_text` 推导生产规则；确有需要时，应先提升上游的 `business` 或 `intent` 分类。
 
+### EBM 辅助候选发现
+
+当校准集的特征数量较多、需要寻找数值分段或双变量组合，且至少有 50 名同时覆盖两类标签的画像用户时，可使用 Explainable Boosting Machine（EBM）辅助候选发现。EBM 是可解释提升机：它学习单变量的非线性影响和少量特征交互，用于提出候选阈值和组合，不替代本 Skill 的 YAML 规则引擎。
+
+EBM 在 P3 中的定位是“扩大候选搜索范围”，与上述 FN/TN 对比并行使用：
+
+1. 先从 FN/TN 对比提出直观的类别、频次和时序候选。
+2. 再以校准标签运行 EBM，扫描连续变量的分段和两变量交互。
+3. 将两种来源的候选统一写入 `candidate_rules.md`，经过相同的命中数、Precision、Recall、Lift、FN 覆盖、重叠性和业务语义审核。
+4. 通过审核的候选才可写入版本化 YAML，初始使用 `weight_candidates: [0, 1, 2]`；仍由现有规则优化器选择权重和总阈值。
+
+仅在以下场景优先使用 EBM：
+
+- 满意度、费用、带宽、ARPU、DOU、MOU 等连续值需要发现可解释分段。
+- 怀疑两个弱信号组合后才有效，需要发现交互假设。
+- 校准样本和结构化特征足够，但人工枚举候选空间过大。
+
+不应使用 EBM 的场景：标签样本很少或低分样本过少、字段口径未稳定、仅需验证已知的 `action + business + intent` 模式，或无法解释 EBM 的候选。不得把 EBM 概率、得分或训练后的模型直接用于业务预测，也不得用独立评测集训练 EBM、选择切点或筛选候选。
+
+运行脚本前，按 `requirements.txt` 安装 `interpret`：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+使用校准集运行 [discover_ebm_candidates.py](scripts/discover_ebm_candidates.py)：
+
+```powershell
+.\.venv\Scripts\python.exe ".github\skills\potential-low-rule-iteration\scripts\discover_ebm_candidates.py" `
+  --profiles "data\incoming\<batch-id>\user_profiles.jsonl" `
+  --labels "data\incoming\<batch-id>\calibration_labels.csv" `
+  --feature-end "YYYY-MM-DD" `
+  --output "data\potential-low-score\<batch-id>_baseline\ebm-discovery"
+```
+
+脚本仅输出候选证据，不会修改 YAML，也不会输出业务预测：
+
+- `ebm_term_importance.csv`：按重要度排序的单变量和交互项。优先查看 `term_type=interaction` 的可解释组合，以及与 FN 缺口一致的高重要度数值特征。
+- `ebm_discovery_report.json`：校准样本量、低分率、训练集指标和特征数量。训练集指标仅用于确认拟合是否有效，不可作为发布指标。
+- `ebm_model.json`：可解释 EBM 模型导出，用于审阅变量分段和交互，不能作为生产模型使用。
+
+将 EBM 输出的候选改写为现有 DSL：数值分段对应 `journey_numeric_lt`、`static_numeric_lt`、`static_numeric_gt` 或月度条件；双变量交互对应 `all_of`。若当前 DSL 无法无歧义表达候选，应先扩展 DSL 并添加聚焦测试，不得使用 EBM 绕过规则系统。
+
 ## 候选规则准入
 
 每条拟议规则写入 YAML 前都必须审核。在 `candidate_rules.md` 表格中记录以下证据：
