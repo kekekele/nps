@@ -19,6 +19,39 @@ description: "Use when: analyzing a new user_profiles.jsonl batch with low-score
 
 不得把任一标签 CSV 中缺失的画像用户作为负样本。文件关联前应规范化并校验 `phone_id`。
 
+## 目录与命名约定
+
+所有新批次使用 `YYYYMMDD` 作为批次 ID。运行本 Skill 前，按以下目录结构准备和查找文件：
+
+```text
+data/
+  incoming/
+    <batch-id>/
+      user_profiles.jsonl
+      calibration_labels.csv
+      evaluation_labels.csv
+  rule-versions/
+    rules_<batch-id>_baseline.yaml
+    rules_<batch-id>_v1.yaml
+    rules_<batch-id>_v2.yaml
+  potential-low-score/
+    <batch-id>_baseline/
+    <batch-id>_v1/
+    <batch-id>_v2/
+```
+
+文件查找及创建规则：
+
+1. 从 `data/incoming/<batch-id>/user_profiles.jsonl` 读取本批用户画像。
+2. 从同目录的 `calibration_labels.csv` 读取校准标签；该文件是必需输入。
+3. 优先读取同目录的 `evaluation_labels.csv`。文件不存在时继续执行，但将结果明确标记为“仅校准集结果，不可发布”。
+4. 首次运行前，将当前 `nps_analysis/protential_low_score/rules.yaml` 复制为 `data/rule-versions/rules_<batch-id>_baseline.yaml`。基线和后续迭代都使用此目录下的版本化规则，不直接修改项目默认规则文件。
+5. 基线输出固定写入 `data/potential-low-score/<batch-id>_baseline/`；每次迭代的规则 YAML 与输出目录使用相同版本号，例如 `rules_<batch-id>_v1.yaml` 对应 `<batch-id>_v1/`。
+6. 不覆盖任何已有版本目录或 YAML。若路径已存在，应使用下一个未占用版本号。
+7. 上一批次存在时，将其输出目录作为分布、命中率和指标漂移的对比基线；不得把上一批标签混入当前批校准集或评测集。
+
+标签文件必须使用 UTF-8 或 UTF-8 BOM 编码，首行至少包含 `phone_id,is_low_score`，其中 `is_low_score` 仅允许 `0` 或 `1`。校准集与评测集的 `phone_id` 应无交集；如有交集，须在报告中列出重叠数并要求数据方拆分后再做发布判断。
+
 ## 当前系统约束
 
 - 规则配置在 `nps_analysis/protential_low_score/rules.yaml`。
@@ -133,7 +166,7 @@ $$
 4. 比较校准集 $TP$、$FP$、$FN$、$TN$、Precision、Recall、$F_1$、选中阈值、选中权重、名单量和逐规则影响。
 5. 若校准结果改善了约定目标，则将冻结结果在评测集运行一次并记录指标。
 
-同一轮不得同时改变多条规则、优化模式和阈值候选，否则无法归因指标改善来源。
+同一轮不得同时改变多条规则、优化模式和阈值候选，否则无法归因指标改善来源。每次运行记录输入批次 ID、规则版本文件、输出目录、运行时间和与上一版本的唯一差异。
 
 ## 目标选择
 
