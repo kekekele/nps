@@ -136,7 +136,17 @@ $$
 
 ### 分析假阴性
 
-在 `calibration_prediction_detail.csv` 中筛选 `prediction_outcome=FN`。将其画像与校准集 TN 用户比较，寻找 FN 常见、TN 少见且可解释的模式。
+在 `calibration_prediction_detail.csv` 中筛选 `prediction_outcome=FN`。将其画像与校准集 TN 用户比较，寻找 FN 常见、TN 少见且可解释的模式。该步骤必须运行 [analyze_false_negatives.py](scripts/analyze_false_negatives.py)，不得仅凭人工浏览明细判断。
+
+```powershell
+.\.venv\Scripts\python.exe ".github\skills\potential-low-rule-iteration\scripts\analyze_false_negatives.py" `
+  --profiles "data\incoming\<batch-id>\user_profiles.jsonl" `
+  --prediction-detail "data\potential-low-score\<batch-id>_baseline\calibration_prediction_detail.csv" `
+  --feature-end "YYYY-MM-DD" `
+  --output "data\potential-low-score\<batch-id>_baseline\fn-analysis"
+```
+
+脚本输出 `fn_tn_feature_contrast.csv` 和 `fn_analysis_report.json`。前者按 FN 与 TN 的非零比例差异排序，覆盖静态数值、月度聚合及旅途结构化聚合特征；它是候选信号列表，不是可直接上线的规则。对排序靠前的信号，仍必须检查业务语义、选择少量可解释分段，并按“候选规则准入”在全体校准标签上复核 TP、FP、Precision、Recall 和 Lift。
 
 候选规则发现优先级如下：
 
@@ -151,7 +161,14 @@ $$
 
 ### EBM 辅助候选发现
 
-当校准集的特征数量较多、需要寻找数值分段或双变量组合，且至少有 50 名同时覆盖两类标签的画像用户时，可使用 Explainable Boosting Machine（EBM）辅助候选发现。EBM 是可解释提升机：它学习单变量的非线性影响和少量特征交互，用于提出候选阈值和组合，不替代本 Skill 的 YAML 规则引擎。
+EBM 不是默认步骤。仅当满足以下全部触发条件时，才可使用 Explainable Boosting Machine（EBM）辅助候选发现：
+
+1. 已完成 P0、P1、P2；当前 YAML 基线的输入字段、日期和规则命中率均无异常。
+2. 校准集中仍有至少 30 个 FN，且 $FN/(TP+FN)\geq 10\%$，表明存在值得挖掘的召回缺口。
+3. 校准集与画像交集不少于 300 人，且低分、非低分各不少于 50 人。
+4. `fn_tn_feature_contrast.csv` 已生成，但人工可枚举的单字段候选仍无法解释主要 FN 缺口，或存在至少两个弱信号可能需要交互组合。
+
+任一条件不满足时，不运行 EBM，优先使用 FN/TN 对比和现有 DSL 模板。EBM 是可解释提升机：它学习单变量的非线性影响和少量特征交互，用于提出候选阈值和组合，不替代本 Skill 的 YAML 规则引擎。
 
 EBM 在 P3 中的定位是“扩大候选搜索范围”，与上述 FN/TN 对比并行使用：
 
@@ -160,7 +177,7 @@ EBM 在 P3 中的定位是“扩大候选搜索范围”，与上述 FN/TN 对�
 3. 将两种来源的候选统一写入 `candidate_rules.md`，经过相同的命中数、Precision、Recall、Lift、FN 覆盖、重叠性和业务语义审核。
 4. 通过审核的候选才可写入版本化 YAML，初始使用 `weight_candidates: [0, 1, 2]`；仍由现有规则优化器选择权重和总阈值。
 
-仅在以下场景优先使用 EBM：
+满足上述触发条件后，以下场景优先使用 EBM：
 
 - 满意度、费用、带宽、ARPU、DOU、MOU 等连续值需要发现可解释分段。
 - 怀疑两个弱信号组合后才有效，需要发现交互假设。
